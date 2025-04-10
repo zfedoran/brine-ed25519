@@ -153,7 +153,7 @@ fn identity() -> PodEdwardsPoint {
 }
 
 /// Create a PodScalar from a u64 integer.
-pub fn scalar_from_u64(n: u64) -> PodScalar {
+fn scalar_from_u64(n: u64) -> PodScalar {
     let mut bytes = [0u8; 32];
     bytes[..8].copy_from_slice(&n.to_le_bytes());
     PodScalar(bytes)
