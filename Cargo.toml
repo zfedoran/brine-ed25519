@@ -1,0 +1,32 @@
+[package]
+name = "brine-ed25519"
+version = "0.1.0"
+edition = "2021"
+description = "An Ed25519 signature verifier for Solana SVM programs using curve25519 syscalls"
+license = "MIT"
+repository = "https://github.com/zfedoran/brine-ed25519"
+readme = "README.md"
+keywords = ["solana", "ed25519", "signature", "no_std", "curve25519"]
+categories = ["cryptography", "no-std", "wasm", "embedded", "blockchain"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# Core cryptography
+curve25519-dalek = { version = "4.1.3", features = ["zeroize"] }
+solana-curve25519 = "2.0.13"
+sha2 = "0.10.8"
+
+# Utilities
+bytemuck = "1.14"
+thiserror = "1.0"
+
+[features]
+default = ["std"]
+std = []
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
