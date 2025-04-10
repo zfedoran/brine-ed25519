@@ -13,21 +13,19 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 **Why brine-ed25519?**
 
-Solana provides an Ed25519 pre-compile program for signature verification—but it comes with several downsides:
+Solana provides an [Ed25519 pre-compile](https://github.com/solana-labs/solana/blob/master/sdk/src/ed25519_instruction.rs) program for signature verification—but it comes with several downsides:
 
-- ❌ Requires the `instruction_sysvar` to be passed into your program  
-- ❌ Charges **5000 lamports per signature**  
-- ❌ Only verifies signatures on data hardcoded into the transaction  
-- ❌ Cannot be used with dynamically generated data inside your program  
+- ❌ Requires the `instruction_sysvar` to be passed into your program
+- ❌ Charges **5000 lamports per signature**
+- ❌ Only verifies signatures on data hardcoded into the transaction
+- ❌ Cannot be used with dynamically generated data inside your program
 
 **brine-ed25519** solves all of that:
 
 - ✅ Verifies Ed25519 signatures **within the program**  
 - ✅ Fully supports dynamically generated messages  
-- ✅ Uses the low-level `curve25519_syscalls` for fast native operations  
-- ✅ Costs **~ 30,000 compute units**  
-- ✅ No extra lamports required  
-- ✅ Built for use in Solana smart contracts (`#![no_std]` compatible)  
+- ✅ Only about **~30,000 compute units**
+- ✅ No extra lamports required
 
 ---
 
@@ -45,7 +43,6 @@ sig_verify(&pubkey, &sig, message)?;
 
 Returns `Ok(())` if valid, or `Err(SignatureError)` if the signature is invalid.
 
----
 
 ## Performance
 
@@ -55,7 +52,6 @@ Returns `Ok(())` if valid, or `Err(SignatureError)` if the signature is invalid.
 
 Measured on-chain using `solana_program::log::sol_log_compute_units()`.
 
----
 
 ## Features
 
@@ -65,9 +61,8 @@ Measured on-chain using `solana_program::log::sol_log_compute_units()`.
 
 Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/doc/html/rfc8032), with adaptations from:
 
----
 
-## 📦 Usage
+## Usage
 
 Add to your `Cargo.toml`:
 
@@ -75,7 +70,6 @@ Add to your `Cargo.toml`:
 brine-ed25519 = "0.1.0"
 ```
 
----
 
 ## Tests
 
@@ -87,7 +81,6 @@ Run locally with:
 cargo test
 ```
 
----
 
 ## Audit and Peer Reviews
 
@@ -98,9 +91,8 @@ This implementation is pulled from [code-vm](https://github.com/code-payments/co
 
 Big thanks to both reviewers for helpful suggestions and CU reductions!
 
----
 
-## Why “brine-ed25519”?
+## Why “brine”?
 
 “Brine” evokes salt water — a precise solution. The name reflects a design focused on _precision_, _fluidity_, and _minimal bloat_ — ideal for constrained environments.
 
