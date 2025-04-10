@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/zfedoran/brine-ed25519"
 readme = "README.md"
 keywords = ["solana", "ed25519", "signature", "no_std", "curve25519"]
-categories = ["cryptography", "no-std", "wasm", "embedded", "blockchain"]
+categories = ["cryptography", "no-std", "wasm", "embedded"]
 
 [lib]
 crate-type = ["cdylib", "lib"]
