@@ -4,7 +4,8 @@
 ![license][license-image]
 [![crates.io](https://img.shields.io/crates/v/brine-ed25519.svg?style=flat)](https://crates.io/crates/brine-ed25519)
 
-![image](https://github.com/user-attachments/assets/edd7bdb7-48c7-461d-a798-d09a3d7d21ca)
+![image](https://github.com/user-attachments/assets/cc354cf3-b82d-40c6-8c9a-9902fae146f0)
+
 
 A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
