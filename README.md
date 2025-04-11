@@ -11,25 +11,38 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 ---
 
-**Why brine-ed25519?**
+## ⚡ Performance
 
-Solana provides an [Ed25519 pre-compile](https://github.com/solana-labs/solana/blob/master/sdk/src/ed25519_instruction.rs) program for signature verification—but it comes with several downsides:
+| Operation    | CU (Approx.) |
+|--------------|--------------|
+| `sig_verify` |      ~30,000 |
 
-- ❌ Requires the `instruction_sysvar` to be passed into your program
-- ❌ Charges **5000 lamports per signature**
-- ❌ Only verifies signatures on data hardcoded into the transaction
-- ❌ Cannot be used with dynamically generated data inside your program
-
-**brine-ed25519** solves all of that:
-
-- ✅ Verifies Ed25519 signatures **within the program**  
-- ✅ Fully supports dynamically generated messages  
-- ✅ Only about **~30,000 compute units**
-- ✅ No extra lamports required
+These value was measured inside the Solana SVM (via test programs), it depends on the size of the data (32 bytes in this case).
 
 ---
 
-## Example: Verifying a Signature
+## ✨ Features
+
+- Verifies Ed25519 signatures **within the program**, at run-time
+- Fully supports dynamically generated messages
+- No extra lamports required
+
+Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/doc/html/rfc8032)
+
+---
+
+## 🧱 Use Cases
+
+- Signed content or metadata validation
+- Meta-transactions & gasless relays
+- Custom auth with off-chain signatures
+- Cross-chain validator proof verification
+- Oracle data integrity checks
+- Decentralized identity & DID claims
+
+---
+
+## 🚀 Quick Start
 
 ```rust
 use brine_ed25519::sig_verify;
@@ -43,46 +56,25 @@ sig_verify(&pubkey, &sig, message)?;
 
 Returns `Ok(())` if valid, or `Err(SignatureError)` if the signature is invalid.
 
+---
 
-## Performance
+## 🧠 But why?
 
-| Function     | CU Used (approx) |
-|--------------|------------------|
-| `sig_verify` | ~30,000          |
+**Q:** Why not use the native Ed25519 program?
 
-Measured on-chain using `solana_program::log::sol_log_compute_units()`.
+**A:** Solana does provide a [Ed25519 pre-compile](https://github.com/solana-labs/solana/blob/master/sdk/src/ed25519_instruction.rs) program for signature verification—but it comes with several downsides:
 
+- Charges an extra **5000 lamports per signature**
+- Requires the `instruction_sysvar` to be passed into your program
+- Only verifies signatures on data hardcoded into the transaction
+- Cannot be used with dynamically generated data inside your program
+- Has [cumbersome devex](https://github.com/solana-labs/solana/blob/7700cb3128c1f19820de67b81aa45d18f73d2ac0/sdk/src/ed25519_instruction.rs#L23-L29)
 
-## Features
+This crate, **brine-ed25519**, solves all of that.
 
-- Uses `curve25519_syscalls`  
-- Drops in easily to any Solana smart contract  
-- Verifies dynamically created payloads  
+---
 
-Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/doc/html/rfc8032), with adaptations from:
-
-
-## Usage
-
-Add to your `Cargo.toml`:
-
-```toml
-brine-ed25519 = "0.1.0"
-```
-
-
-## Tests
-
-Includes test vectors from RFC 8032, as well as custom positive/negative test cases.
-
-Run locally with:
-
-```bash
-cargo test
-```
-
-
-## Audit and Peer Reviews
+## 🔐 Security
 
 This implementation is pulled from [code-vm](https://github.com/code-payments/code-vm) (MIT-licensed), which was written and maintained by the author of this crate.
 
@@ -91,13 +83,8 @@ This implementation is pulled from [code-vm](https://github.com/code-payments/co
 
 Big thanks to both reviewers for helpful suggestions and CU reductions!
 
-
-## Why “brine”?
-
-“Brine” evokes salt water — a precise solution. The name reflects a design focused on _precision_, _fluidity_, and _minimal bloat_ — ideal for constrained environments.
-
 ---
 
-## License
+## 🙌 Contributing
 
-Licensed under the MIT License.
+Contributions are welcome! Please open issues or PRs on the GitHub repo.
