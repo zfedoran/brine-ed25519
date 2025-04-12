@@ -51,7 +51,7 @@ pub fn sig_verify(pubkey: &[u8], sig: &[u8], message: &[u8]) -> Result<(), Signa
     let (sig_lower, sig_upper) = split_signature(sig.try_into().unwrap());
 
     let sig_R = PodEdwardsPoint(sig_lower);
-    let sig_s = Scalar::from_canonical_bytes(sig_upper).unwrap();
+    let sig_s: Scalar = Option::from(Scalar::from_canonical_bytes(sig_upper)).ok_or(SignatureError::InvalidSignature)?;
 
     if is_small_order(&sig_R) || is_small_order(&pubkey_point) {
         return Err(SignatureError::InvalidAccountOwner);
