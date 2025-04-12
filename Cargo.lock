@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "brine-ed25519"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "curve25519-dalek",
  "sha2",

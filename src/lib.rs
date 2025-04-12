@@ -86,9 +86,12 @@ pub fn sig_verify(pubkey: &[u8], sig: &[u8], message: &[u8]) -> Result<(), Signa
 
     // R = sB - kA
 
-    let sB = multiply_edwards(&b, &B).ok_or(SignatureError::InvalidSignature)?;
-    let kA = multiply_edwards(&a, &PodEdwardsPoint(pubkey_bytes)).ok_or(SignatureError::InvalidSignature)?;
-    let R = subtract_edwards(&sB, &kA).ok_or(SignatureError::InvalidSignature)?;
+    let sB = multiply_edwards(&b, &B)
+        .ok_or(SignatureError::InvalidSignature)?;
+    let kA = multiply_edwards(&a, &PodEdwardsPoint(pubkey_bytes))
+        .ok_or(SignatureError::InvalidSignature)?;
+    let R = subtract_edwards(&sB, &kA)
+        .ok_or(SignatureError::InvalidSignature)?;
 
     let expected_R = sig_R.0;
     let computed_R = R.0;
