@@ -1,6 +1,6 @@
 [package]
 name = "brine-ed25519"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Ed25519 signature verification for Solana SVM programs using curve25519 syscalls"
 license = "MIT"
