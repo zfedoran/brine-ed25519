@@ -1,0 +1,66 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+name: CI
+jobs:
+  lint:
+    name: Lints
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Rust format
+        run: |
+          cargo fmt --all -- --check
+
+      - name: Run Clippy lints
+        run: |
+          cargo clippy --all --all-targets --all-features -- -D warnings
+      - name: Run Clippy lints (no-std)
+        run: |
+          cargo clippy --all --all-targets --no-default-features -- -D warnings
+
+      - name: check Rust docs
+        run: |
+          RUSTDOCFLAGS="-Dwarnings" cargo doc --document-private-items --no-deps --all-features --workspace
+  check:
+    name: Unix tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check
+        run: cargo c
+
+      - name: Check
+        run: cargo c --no-default-features
+
+      - name: Run cargo tests
+        run: cargo t
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit
