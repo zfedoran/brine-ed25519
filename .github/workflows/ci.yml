@@ -35,7 +35,7 @@ jobs:
         run: |
           RUSTDOCFLAGS="-Dwarnings" cargo doc --document-private-items --no-deps --all-features --workspace
   check:
-    name: Unix tests
+    name: check/tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code

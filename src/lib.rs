@@ -173,7 +173,7 @@ mod tests {
         // Base point (has large order)
         let base_point_bytes = G;
         let base_point = PodEdwardsPoint(base_point_bytes);
-        assert_eq!(is_small_order(&base_point), false);
+        assert!(!is_small_order(&base_point));
 
         // Torsion points (have small order)
         for i in 0..8 {
@@ -181,7 +181,7 @@ mod tests {
             let compressed = torsion_point.compress();
             let torsion_point_bytes = compressed.to_bytes();
             let torsion_point = PodEdwardsPoint(torsion_point_bytes);
-            assert_eq!(is_small_order(&torsion_point), true);
+            assert!(is_small_order(&torsion_point));
         }
     }
 
