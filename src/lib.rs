@@ -123,8 +123,8 @@ fn split_signature(sig: &[u8; 64]) -> ([u8; 32], [u8; 32]) {
 ///
 /// # Return
 ///
-/// * `true` if `self` is in the torsion subgroup \\( \mathcal E[8] \\);
-/// * `false` if `self` is not in the torsion subgroup \\( \mathcal E[8] \\).
+/// * `true` if `self` is in the torsion subgroup \\( \mathcal E\[8\] \\);
+/// * `false` if `self` is not in the torsion subgroup \\( \mathcal E\[8\] \\).
 fn is_small_order(point: &PodEdwardsPoint) -> bool {
     // Create a PodScalar representing the scalar value 8
     let scalar_8 = scalar_from_u64(8);
