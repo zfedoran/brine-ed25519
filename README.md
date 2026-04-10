@@ -43,13 +43,13 @@ Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/d
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```rust
 use brine_ed25519::*;
 
-let pubkey: Pubkey = [...];
-let sig: Signature = [...];
+let pubkey: [u8; 32] = [...];
+let sig: [u8; 64] = [...];
 
 let message = b"hello world";
 sig_verify(&pubkey, &sig, message)?;
