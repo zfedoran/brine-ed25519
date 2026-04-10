@@ -498,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "brine-ed25519"
-version = "0.2.0"
+version = "0.3.1"
 dependencies = [
  "curve25519-dalek",
  "sha2 0.10.9",
