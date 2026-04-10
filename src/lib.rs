@@ -39,64 +39,74 @@ const G: [u8; 32] = [
     102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102,
 ];
 
-/// Verify an ed25519 signature.
+/// Verify an ed25519 signature using the provided hash implementation.
+#[inline(always)]
+pub fn verify<H: Hasher>(
+    pubkey: &Pubkey,
+    sig: &Signature,
+    message: &[u8],
+) -> Result<(), SignatureError> {
+    verifyv::<H>(pubkey, sig, core::slice::from_ref(&message))
+}
+
+/// Verify an ed25519 signature over a vectored message using the provided
+/// hash implementation.
+#[inline(always)]
+pub fn verifyv<H: Hasher>(
+    pubkey: &Pubkey,
+    sig: &Signature,
+    messagev: &[&[u8]],
+) -> Result<(), SignatureError> {
+
+    // SAFETY: The length of `sig` is 64 bytes, so slicing the first 32 bytes is always valid.
+    let sig_r_bytes: [u8; 32] = sig[..32]
+        .try_into()
+        .unwrap();
+
+    let sig_r = PodEdwardsPoint(sig_r_bytes);
+    let challenge = challenge::<H>(&sig_r, pubkey, messagev);
+
+    verify_challenge(pubkey, sig, &challenge)
+}
+
+/// Convenience function to verify an ed25519 signature over a single message using
+/// the default hash implementation (Sha512).
 #[inline(always)]
 pub fn sig_verify(
     pubkey: &Pubkey,
     sig: &Signature,
     message: &[u8],
 ) -> Result<(), SignatureError> {
-    sig_verify_with::<Sha512>(pubkey, sig, message)
+    verify::<Sha512>(pubkey, sig, message)
 }
 
-/// Verify an ed25519 signature using the provided hash implementation.
-#[inline(always)]
-pub fn sig_verify_with<H: Hasher>(
-    pubkey: &Pubkey,
-    sig: &Signature,
-    message: &[u8],
-) -> Result<(), SignatureError> {
-    sig_verifyv_with::<H>(pubkey, sig, core::slice::from_ref(&message))
-}
-
-/// Verify an ed25519 signature over a vectored message.
+/// Convenience function to verify an ed25519 signature over a vectored messagev
+/// using the default hash implementation (Sha512).
 #[inline(always)]
 pub fn sig_verifyv(
     pubkey: &Pubkey,
     sig: &Signature,
     messagev: &[&[u8]],
 ) -> Result<(), SignatureError> {
-    sig_verifyv_with::<Sha512>(pubkey, sig, messagev)
+    verifyv::<Sha512>(pubkey, sig, messagev)
 }
 
-/// Verify an ed25519 signature over a vectored message using the provided
-/// hash implementation.
-#[inline(always)]
-pub fn sig_verifyv_with<H: Hasher>(
-    pubkey: &Pubkey,
-    sig: &Signature,
-    messagev: &[&[u8]],
-) -> Result<(), SignatureError> {
-    let sig_r_bytes: [u8; 32] = sig[..32].try_into().unwrap();
-    let sig_r = PodEdwardsPoint(sig_r_bytes);
-    let challenge = challenge::<H>(&sig_r, pubkey, messagev);
-    sig_verify_challenge(pubkey, sig, &challenge)
-}
 
-/// Verify an ed25519 signature using a precomputed verifier 
-/// challenge hash `H(R || A || M)`.
+/// Verify an ed25519 signature using a precomputed verifier challenge hash `H(R || A || M)`.
+/// This is useful in cases where the challenge hash needs to be computed off-chain or pre-computed
+/// on-chain for efficiency reasons.
 #[inline(always)]
-pub fn sig_verify_challenge(
+pub fn verify_challenge(
     pubkey: &Pubkey,
     sig: &Signature,
     challenge: &Challenge,
 ) -> Result<(), SignatureError> {
-    sig_verify_internal(pubkey, sig, challenge)
+    verify_internal(pubkey, sig, challenge)
 }
 
 #[inline(always)]
 #[allow(non_snake_case)]
-fn sig_verify_internal(
+fn verify_internal(
     pubkey: &Pubkey,
     sig: &Signature,
     challenge: &Challenge,
@@ -276,7 +286,7 @@ mod tests {
         ];
 
         assert!(sig_verify(&pubkey, &sig, "hello world".as_bytes()).is_ok());
-        assert!(sig_verify_with::<Sha512>(&pubkey, &sig, "hello world".as_bytes()).is_ok());
+        assert!(verify::<Sha512>(&pubkey, &sig, "hello world".as_bytes()).is_ok());
         assert!(sig_verify(&pubkey, &sig, "not the right message".as_bytes()).is_err());
     }
 
@@ -297,7 +307,7 @@ mod tests {
         let bad_messagev: &[&[u8]] = &[b"hello", b" ", b"there"];
 
         assert!(sig_verifyv(&pubkey, &sig, messagev).is_ok());
-        assert!(sig_verifyv_with::<Sha512>(&pubkey, &sig, messagev).is_ok());
+        assert!(verifyv::<Sha512>(&pubkey, &sig, messagev).is_ok());
         assert!(sig_verifyv(&pubkey, &sig, bad_messagev).is_err());
     }
 
@@ -368,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sig_verify_challenge() {
+    fn test_challenge() {
         let pubkey: [u8; 32] = [
             0xfc, 0x51, 0xcd, 0x8e, 0x62, 0x18, 0xa1, 0xa3, 0x8d, 0xa4, 0x7e, 0xd0, 0x02, 0x30,
             0xf0, 0x58, 0x08, 0x16, 0xed, 0x13, 0xba, 0x33, 0x03, 0xac, 0x5d, 0xeb, 0x91, 0x15,
@@ -387,8 +397,8 @@ mod tests {
         let challenge = Sha512::hashv(&[sig[..32].as_ref(), pubkey.as_ref(), message.as_ref()]);
         let wrong_challenge = [0u8; 64];
 
-        assert!(sig_verify_challenge(&pubkey, &sig, &challenge).is_ok());
-        assert!(sig_verify_challenge(&pubkey, &sig, &wrong_challenge).is_err());
+        assert!(verify_challenge(&pubkey, &sig, &challenge).is_ok());
+        assert!(verify_challenge(&pubkey, &sig, &wrong_challenge).is_err());
     }
 
     #[test]
