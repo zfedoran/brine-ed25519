@@ -73,10 +73,7 @@ mod imp {
 #[cfg(target_os = "solana")]
 mod imp {
     use super::{PodEdwardsPoint, PodScalar};
-    use solana_define_syscall::definitions::{
-        sol_curve_group_op,
-        sol_curve_validate_point
-    };
+    use solana_define_syscall::definitions::{sol_curve_group_op, sol_curve_validate_point};
 
     const CURVE25519_EDWARDS: u64 = 0;
     const SUB: u64 = 1;
@@ -86,11 +83,7 @@ mod imp {
     pub(crate) fn validate_edwards(point: &PodEdwardsPoint) -> bool {
         let mut validate_result = 0u8;
         let result = unsafe {
-            sol_curve_validate_point(
-                CURVE25519_EDWARDS,
-                point.0.as_ptr(),
-                &mut validate_result
-            )
+            sol_curve_validate_point(CURVE25519_EDWARDS, point.0.as_ptr(), &mut validate_result)
         };
         result == 0
     }
@@ -142,8 +135,4 @@ mod imp {
     }
 }
 
-pub(crate) use imp::{
-    multiply_edwards, 
-    subtract_edwards, 
-    validate_edwards
-};
+pub(crate) use imp::{multiply_edwards, subtract_edwards, validate_edwards};

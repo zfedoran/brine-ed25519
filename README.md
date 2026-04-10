@@ -15,9 +15,9 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 | Operation    | CU (Approx.) |
 |--------------|--------------|
-| `sig_verify` |      ~27,026 |
-| `sig_verifyv` |     ~27,299 |
-| `sig_verify_prehashed` | ~27,033 |
+| `sig_verify` |      ~23,724 |
+| `sig_verifyv` |     ~23,905 |
+| `sig_verify_prehashed` | ~23,717 |
 
 These values were measured inside the Solana SVM via `test-program/`. They depend on message size and message partitioning; the numbers above come from the included benchmark cases.
 
@@ -76,10 +76,10 @@ A minimal Solana test program lives in `test-program/`. It runs `sig_verify`, `s
 ```bash
 cd test-program
 cargo build-sbf
-cargo test -- --ignored --nocapture
+cargo test-sbf -- --ignored --nocapture
 ```
 
-The ignored tests print the compute units consumed for each verification mode and assert broad ceilings to catch regressions without pinning exact CU counts too tightly.
+The ignored tests print the compute units consumed for each verification mode and assert broad ceilings to catch regressions without pinning exact CU counts too tightly. The numbers above are from the current included SBF cases.
 
 ---
 

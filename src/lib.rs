@@ -2,16 +2,14 @@
 
 use core::mem::MaybeUninit;
 use sha2::{Digest, Sha512};
-use curve25519_dalek::scalar::Scalar;
 
 mod curve;
+mod scalar;
+
 use crate::curve::{
-    multiply_edwards, 
-    subtract_edwards, 
-    validate_edwards, 
-    PodEdwardsPoint, 
-    PodScalar,
+    multiply_edwards, subtract_edwards, validate_edwards, PodEdwardsPoint, PodScalar,
 };
+use crate::scalar::{scalar_from_bytes_mod_order_wide, scalar_from_canonical_bytes};
 
 const ED25519_SIG_LEN: usize = 64;
 const ED25519_PUBKEY_LEN: usize = 32;
@@ -92,8 +90,8 @@ fn sig_verify_internal(
     let (sig_lower, sig_upper) = split_signature(sig);
 
     let sig_R = PodEdwardsPoint(sig_lower);
-    let sig_s: Scalar = Option::from(Scalar::from_canonical_bytes(sig_upper))
-        .ok_or(SignatureError::InvalidSignature)?;
+    let sig_s_bytes =
+        scalar_from_canonical_bytes(sig_upper).ok_or(SignatureError::InvalidSignature)?;
 
     if is_small_order(&sig_R) || is_small_order(&pubkey_point) {
         return Err(SignatureError::InvalidAccountOwner);
@@ -110,11 +108,8 @@ fn sig_verify_internal(
         return Err(SignatureError::InvalidAccountOwner);
     }
 
-    let k = challenge_scalar(&sig_R, pubkey, messagev);
-
-    let k_bytes = k.to_bytes();
+    let k_bytes = challenge_scalar(&sig_R, pubkey, messagev);
     let pubkey_bytes = pubkey_point.0;
-    let sig_s_bytes = sig_s.to_bytes();
 
     let a = PodScalar(k_bytes);
     let b = PodScalar(sig_s_bytes);
@@ -142,7 +137,7 @@ fn challenge_scalar(
     sig_r: &PodEdwardsPoint,
     pubkey: &[u8; ED25519_PUBKEY_LEN],
     messagev: &[&[u8]],
-) -> Scalar {
+) -> [u8; 32] {
     let mut h: Sha512 = Sha512::new(); // <- Expensive, no system calls available yet.
     h.update(sig_r.0);
     h.update(pubkey);
@@ -152,7 +147,7 @@ fn challenge_scalar(
     }
 
     let f = h.finalize();
-    Scalar::from_bytes_mod_order_wide(f.as_ref())
+    scalar_from_bytes_mod_order_wide(f.as_ref())
 }
 
 /// Split the signature into two 32-byte arrays.
