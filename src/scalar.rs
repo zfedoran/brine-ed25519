@@ -281,6 +281,10 @@ mod raw {
 #[cfg(test)]
 mod tests {
     use super::raw;
+    use rand::{RngCore, SeedableRng};
+    use rand::rngs::{OsRng, StdRng};
+
+    const FUZZ_RANDOM_CASES: u64 = 1_000_000;
 
     const L_BYTES: [u8; 32] = [
         0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
@@ -472,6 +476,38 @@ mod tests {
                 raw::scalar_from_canonical_bytes(reduced),
                 Some(reduced),
                 "bit {bit} reduced {reduced:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore] // This is a long-running fuzz test
+    fn fuzz_random_against_dalek() {
+        let mut seed = [0u8; 32];
+        OsRng.fill_bytes(&mut seed);
+        let mut rng = StdRng::from_seed(seed);
+
+        for case in 0..FUZZ_RANDOM_CASES {
+            let mut canonical = [0u8; 32];
+            rng.fill_bytes(&mut canonical);
+
+            assert_eq!(
+                raw::scalar_from_canonical_bytes(canonical),
+                dalek_canonical(canonical),
+                "seed {seed:?} case {case} canonical {canonical:?}"
+            );
+
+            let mut wide = [0u8; 64];
+            rng.fill_bytes(&mut wide);
+
+            let reduced = raw::scalar_from_bytes_mod_order_wide(&wide);
+            let expected = dalek_wide(&wide);
+
+            assert_eq!(reduced, expected, "seed {seed:?} case {case} wide {wide:?}");
+            assert_eq!(
+                raw::scalar_from_canonical_bytes(reduced),
+                Some(reduced),
+                "seed {seed:?} case {case} reduced {reduced:?}"
             );
         }
     }
