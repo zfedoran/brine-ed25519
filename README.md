@@ -45,16 +45,24 @@ Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/d
 ## 🚀 Quick Start
 
 ```rust
-use brine_ed25519::sig_verify;
+use brine_ed25519::{sig_verify, sig_verify_prehashed, sig_verifyv};
 
 let pubkey: [u8; 32] = [...];
 let sig: [u8; 64] = [...];
 let message = b"hello world";
 
 sig_verify(&pubkey, &sig, message)?;
+
+let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
+sig_verifyv(&pubkey, &sig, messagev)?;
+
+let message_hash = &[...];
+sig_verify_prehashed(&pubkey, &sig, message_hash)?;
 ```
 
 Returns `Ok(())` if valid, or `Err(SignatureError)` if the signature is invalid.
+
+`sig_verify_prehashed` verifies signatures over already-hashed bytes. It does not implement RFC 8032 `Ed25519ph`.
 
 ---
 
