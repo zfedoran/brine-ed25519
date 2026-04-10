@@ -60,7 +60,7 @@ fn process_instruction(
         // (e.g. for verifying signatures from off-chain where the message is too large 
         // to fit in a single instruction, or to save compute units by avoiding hashing on-chain)
         // Be careful when doing this
-        MODE_VERIFY_PREHASHED => 
+        MODE_PREHASHED => 
             sig_verify_prehashed(pubkey, sig, payload),
 
         _ => Err(SignatureError::InvalidArgument),
@@ -275,7 +275,7 @@ mod tests {
 
     fn prehashed_ix(digest: &[u8]) -> Instruction {
         instruction(
-            MODE_VERIFY_PREHASHED,
+            MODE_PREHASHED,
             &PREHASHED_PUBKEY,
             &PREHASHED_SIG,
             digest,

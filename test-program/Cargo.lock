@@ -388,7 +388,7 @@ version = "0.2.0"
 dependencies = [
  "curve25519-dalek 4.1.3",
  "sha2 0.10.9",
- "solana-curve25519",
+ "solana-define-syscall",
 ]
 
 [[package]]
