@@ -31,18 +31,6 @@ Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/d
 
 ---
 
-## Use Cases
-
-- Programmable signature verification (e.g. replacing durable nonces)
-- Signed content or metadata validation
-- Meta-transactions & gasless relays
-- Custom auth with off-chain signatures
-- Cross-chain validator proof verification
-- Oracle data integrity checks
-- Decentralized identity & DID claims
-
----
-
 ## Quick Start
 
 ```rust
@@ -62,35 +50,7 @@ sig_verify(&pubkey, &sig, message)?;
 sig_verifyv(&pubkey, &sig, messagev)?;
 ```
 
-Returns `Ok(())` if valid, or `Err(SignatureError)` if the signature is invalid.
-
-## Custom Verifiers
-
-Custom verifier hashers are supported via `verify` and `verifyv`.
-
-```rust
-let message = b"hello world";
-verify::<Blake3>(&pubkey, &sig, message)?;
-
-let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
-verifyv::<Blake3>(&pubkey, &sig, messagev)?;
-```
-
-Implement the `Hasher` trait for your verifier hasher type.
-
----
-
-## SVM Tests
-
-A minimal Solana test program lives in `test-program/`. It runs `sig_verify`, `sig_verifyv`, and `sig_verify_challenge` inside the SVM with Mollusk so you can catch runtime regressions and record compute usage.
-
-```bash
-cd test-program
-cargo build-sbf
-cargo test-sbf -- --ignored --nocapture
-```
-
-The ignored tests print the compute units consumed for each verification mode and assert broad ceilings to catch regressions without pinning exact CU counts too tightly. The numbers above are from the current included SBF cases.
+Custom verifier hashers are supported via `verify` and `verifyv` using the `Hasher` trait.
 
 ---
 
