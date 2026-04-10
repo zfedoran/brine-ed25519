@@ -1,18 +1,29 @@
 #![no_std]
-
 use core::mem::MaybeUninit;
-use sha2::{Digest, Sha512};
 
+pub mod hasher;
 mod curve;
 mod scalar;
 
 use crate::curve::{
-    multiply_edwards, subtract_edwards, validate_edwards, PodEdwardsPoint, PodScalar,
+    multiply_edwards,
+    subtract_edwards,
+    validate_edwards,
+    PodEdwardsPoint,
+    PodScalar,
 };
-use crate::scalar::{scalar_from_bytes_mod_order_wide, scalar_from_canonical_bytes};
+use crate::hasher::{Hasher, Sha512};
+use crate::scalar::{
+    scalar_from_bytes_mod_order_wide, 
+    scalar_from_canonical_bytes
+};
 
-const ED25519_SIG_LEN: usize = 64;
+const ED25519_SIG_LEN:    usize = 64;
 const ED25519_PUBKEY_LEN: usize = 32;
+
+pub type Pubkey    = [u8; ED25519_PUBKEY_LEN];
+pub type Signature = [u8; ED25519_SIG_LEN];
+pub type Challenge = [u8; 64];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureError {
@@ -30,50 +41,65 @@ const G: [u8; 32] = [
 
 /// Verify an ed25519 signature.
 #[inline(always)]
-#[allow(non_snake_case)]
-pub fn sig_verify(pubkey: &[u8], sig: &[u8], message: &[u8]) -> Result<(), SignatureError> {
-    sig_verifyv(pubkey, sig, core::slice::from_ref(&message))
+pub fn sig_verify(
+    pubkey: &Pubkey,
+    sig: &Signature,
+    message: &[u8],
+) -> Result<(), SignatureError> {
+    sig_verify_with::<Sha512>(pubkey, sig, message)
+}
+
+/// Verify an ed25519 signature using the provided hash implementation.
+#[inline(always)]
+pub fn sig_verify_with<H: Hasher>(
+    pubkey: &Pubkey,
+    sig: &Signature,
+    message: &[u8],
+) -> Result<(), SignatureError> {
+    sig_verifyv_with::<H>(pubkey, sig, core::slice::from_ref(&message))
 }
 
 /// Verify an ed25519 signature over a vectored message.
 #[inline(always)]
-#[allow(non_snake_case)]
-pub fn sig_verifyv(pubkey: &[u8], sig: &[u8], messagev: &[&[u8]]) -> Result<(), SignatureError> {
-    if pubkey.len() != ED25519_PUBKEY_LEN {
-        return Err(SignatureError::InvalidArgument);
-    }
-
-    if sig.len() != ED25519_SIG_LEN {
-        return Err(SignatureError::InvalidArgument);
-    }
-
-    sig_verify_internal(
-        pubkey.try_into().unwrap(),
-        sig.try_into().unwrap(),
-        messagev,
-    )
+pub fn sig_verifyv(
+    pubkey: &Pubkey,
+    sig: &Signature,
+    messagev: &[&[u8]],
+) -> Result<(), SignatureError> {
+    sig_verifyv_with::<Sha512>(pubkey, sig, messagev)
 }
 
-/// Verify an ed25519 signature over prehashed bytes.
-///
-/// This does not implement RFC 8032 Ed25519ph. The signer must have signed
-/// `message_hash` directly as the message bytes.
+/// Verify an ed25519 signature over a vectored message using the provided
+/// hash implementation.
 #[inline(always)]
-#[allow(non_snake_case)]
-pub fn sig_verify_prehashed(
-    pubkey: &[u8],
-    sig: &[u8],
-    message_hash: &[u8],
+pub fn sig_verifyv_with<H: Hasher>(
+    pubkey: &Pubkey,
+    sig: &Signature,
+    messagev: &[&[u8]],
 ) -> Result<(), SignatureError> {
-    sig_verifyv(pubkey, sig, core::slice::from_ref(&message_hash))
+    let sig_r_bytes: [u8; 32] = sig[..32].try_into().unwrap();
+    let sig_r = PodEdwardsPoint(sig_r_bytes);
+    let challenge = challenge::<H>(&sig_r, pubkey, messagev);
+    sig_verify_challenge(pubkey, sig, &challenge)
+}
+
+/// Verify an ed25519 signature using a precomputed verifier 
+/// challenge hash `H(R || A || M)`.
+#[inline(always)]
+pub fn sig_verify_challenge(
+    pubkey: &Pubkey,
+    sig: &Signature,
+    challenge: &Challenge,
+) -> Result<(), SignatureError> {
+    sig_verify_internal(pubkey, sig, challenge)
 }
 
 #[inline(always)]
 #[allow(non_snake_case)]
 fn sig_verify_internal(
-    pubkey: &[u8; ED25519_PUBKEY_LEN],
-    sig: &[u8; ED25519_SIG_LEN],
-    messagev: &[&[u8]],
+    pubkey: &Pubkey,
+    sig: &Signature,
+    challenge: &Challenge,
 ) -> Result<(), SignatureError> {
     // Normally, we could verify the signature using the Solana SDK or
     // dalek_ed25519, but those are too compute, stack, and heap heavy for the
@@ -108,7 +134,7 @@ fn sig_verify_internal(
         return Err(SignatureError::InvalidAccountOwner);
     }
 
-    let k_bytes = challenge_scalar(&sig_R, pubkey, messagev);
+    let k_bytes = scalar_from_bytes_mod_order_wide(challenge);
     let pubkey_bytes = pubkey_point.0;
 
     let a = PodScalar(k_bytes);
@@ -133,21 +159,20 @@ fn sig_verify_internal(
 }
 
 #[inline(always)]
-fn challenge_scalar(
+fn challenge<H: Hasher>(
     sig_r: &PodEdwardsPoint,
-    pubkey: &[u8; ED25519_PUBKEY_LEN],
+    pubkey: &Pubkey,
     messagev: &[&[u8]],
-) -> [u8; 32] {
-    let mut h: Sha512 = Sha512::new(); // <- Expensive, no system calls available yet.
-    h.update(sig_r.0);
-    h.update(pubkey);
+) -> Challenge {
+    let mut hasher = H::new();
+    hasher.update(&sig_r.0);
+    hasher.update(pubkey);
 
     for message in messagev {
-        h.update(message);
+        hasher.update(message);
     }
 
-    let f = h.finalize();
-    scalar_from_bytes_mod_order_wide(f.as_ref())
+    hasher.finalize()
 }
 
 /// Split the signature into two 32-byte arrays.
@@ -207,6 +232,7 @@ fn scalar_from_u64(n: u64) -> PodScalar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hasher::Hasher;
     use curve25519_dalek::constants;
 
     #[test]
@@ -250,6 +276,7 @@ mod tests {
         ];
 
         assert!(sig_verify(&pubkey, &sig, "hello world".as_bytes()).is_ok());
+        assert!(sig_verify_with::<Sha512>(&pubkey, &sig, "hello world".as_bytes()).is_ok());
         assert!(sig_verify(&pubkey, &sig, "not the right message".as_bytes()).is_err());
     }
 
@@ -270,6 +297,7 @@ mod tests {
         let bad_messagev: &[&[u8]] = &[b"hello", b" ", b"there"];
 
         assert!(sig_verifyv(&pubkey, &sig, messagev).is_ok());
+        assert!(sig_verifyv_with::<Sha512>(&pubkey, &sig, messagev).is_ok());
         assert!(sig_verifyv(&pubkey, &sig, bad_messagev).is_err());
     }
 
@@ -340,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sig_verify_prehashed_wrapper() {
+    fn test_sig_verify_challenge() {
         let pubkey: [u8; 32] = [
             0xfc, 0x51, 0xcd, 0x8e, 0x62, 0x18, 0xa1, 0xa3, 0x8d, 0xa4, 0x7e, 0xd0, 0x02, 0x30,
             0xf0, 0x58, 0x08, 0x16, 0xed, 0x13, 0xba, 0x33, 0x03, 0xac, 0x5d, 0xeb, 0x91, 0x15,
@@ -355,9 +383,32 @@ mod tests {
             0xc0, 0x27, 0xbe, 0xce, 0xea, 0x1e, 0xc4, 0x0a,
         ];
 
-        let digest = &[0xaf, 0x82];
+        let message = &[0xaf, 0x82];
+        let challenge = Sha512::hashv(&[sig[..32].as_ref(), pubkey.as_ref(), message.as_ref()]);
+        let wrong_challenge = [0u8; 64];
 
-        assert!(sig_verify_prehashed(&pubkey, &sig, digest).is_ok());
-        assert!(sig_verify_prehashed(&pubkey, &sig, "not the right message".as_bytes()).is_err());
+        assert!(sig_verify_challenge(&pubkey, &sig, &challenge).is_ok());
+        assert!(sig_verify_challenge(&pubkey, &sig, &wrong_challenge).is_err());
+    }
+
+    #[test]
+    fn test_challenge_hashv() {
+        let sig_r = PodEdwardsPoint([
+            164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
+            28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33,
+        ]);
+        let pubkey = [
+            73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233,
+            49, 154, 201, 171, 175, 47, 6, 223, 101, 105, 80, 95, 166,
+        ];
+        let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
+
+        let expected =
+            Sha512::hashv(&[sig_r.0.as_ref(), pubkey.as_ref(), b"hello", b" ", b"world"]);
+
+        assert_eq!(
+            challenge::<Sha512>(&sig_r, &pubkey, messagev),
+            expected
+        );
     }
 }
