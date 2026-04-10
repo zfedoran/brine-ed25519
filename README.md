@@ -15,11 +15,9 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 | Operation    | CU (Approx.) |
 |--------------|--------------|
-| `sig_verify` |      ~23,724 |
-| `sig_verifyv` |     ~23,905 |
-| `sig_verify_prehashed` | ~23,717 |
+| `sig_verify` |      ~23,475 |
 
-These values were measured inside the Solana SVM via `test-program/`. They depend on message size and message partitioning; the numbers above come from the included benchmark cases.
+This value is measured inside the Solana SVM via `test-program/` and depends on the message size.
 
 ---
 
@@ -48,30 +46,40 @@ Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/d
 ## 🚀 Quick Start
 
 ```rust
-use brine_ed25519::{sig_verify, sig_verify_prehashed, sig_verifyv};
+use brine_ed25519::*;
 
-let pubkey: [u8; 32] = [...];
-let sig: [u8; 64] = [...];
+let pubkey: Pubkey = [...];
+let sig: Signature = [...];
+
 let message = b"hello world";
-
 sig_verify(&pubkey, &sig, message)?;
 
 let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
 sig_verifyv(&pubkey, &sig, messagev)?;
-
-let message_hash = &[...];
-sig_verify_prehashed(&pubkey, &sig, message_hash)?;
 ```
 
 Returns `Ok(())` if valid, or `Err(SignatureError)` if the signature is invalid.
 
-`sig_verify_prehashed` verifies signatures over already-hashed bytes. It does not implement RFC 8032 `Ed25519ph`.
+## Custom Verifiers
+
+Custom verifier hashers are supported via `sig_verify_with` and
+`sig_verifyv_with`.
+
+```rust
+let message = b"hello world";
+sig_verify_with::<Blake3>(&pubkey, &sig, message)?;
+
+let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
+sig_verifyv_with::<Blake3>(&pubkey, &sig, messagev)?;
+```
+
+Implement the `Hasher` trait for your verifier hasher type.
 
 ---
 
 ## SVM Tests
 
-A minimal Solana test program lives in `test-program/`. It runs `sig_verify`, `sig_verifyv`, and `sig_verify_prehashed` inside the SVM with Mollusk so you can catch runtime regressions and record compute usage.
+A minimal Solana test program lives in `test-program/`. It runs `sig_verify`, `sig_verifyv`, and `sig_verify_challenge` inside the SVM with Mollusk so you can catch runtime regressions and record compute usage.
 
 ```bash
 cd test-program
