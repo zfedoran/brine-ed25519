@@ -27,10 +27,10 @@ pub type Challenge = [u8; 64];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureError {
-    InvalidArgument,
+    /// The provided public key is not a valid non-small-order Edwards point.
     InvalidPublicKey,
+    /// The signature is malformed or does not verify for the provided message.
     InvalidSignature,
-    InvalidAccountOwner,
 }
 
 /// Compressed base point
@@ -129,23 +129,10 @@ fn verify_internal(
     let sig_s_bytes =
         scalar_from_canonical_bytes(sig_upper).ok_or(SignatureError::InvalidSignature)?;
 
-    if is_small_order(&sig_R) || is_small_order(&pubkey_point) {
-        return Err(SignatureError::InvalidAccountOwner);
-    }
-
-    // Note, the point validation below is optional. The internal
-    // PodEdwardsPoint decompress logic is already doing this check.
-    // But, this makes it explicit in case the internal logic changes.
-
-    // (Remove this check if CU usage is a concern)
-    let pubkey_on_curve = validate_edwards(&pubkey_point);
-    let sig_R_on_curve = validate_edwards(&sig_R);
-    if !pubkey_on_curve || !sig_R_on_curve {
-        return Err(SignatureError::InvalidAccountOwner);
-    }
+    validate_pubkey(&pubkey_point)?;
+    validate_signature_point(&sig_R)?;
 
     let k_bytes = scalar_from_bytes_mod_order_wide(challenge);
-    let pubkey_bytes = pubkey_point.0;
 
     let a = PodScalar(k_bytes);
     let b = PodScalar(sig_s_bytes);
@@ -154,8 +141,7 @@ fn verify_internal(
     // R = sB - kA
 
     let sB = multiply_edwards(&b, &B).ok_or(SignatureError::InvalidSignature)?;
-    let kA = multiply_edwards(&a, &PodEdwardsPoint(pubkey_bytes))
-        .ok_or(SignatureError::InvalidSignature)?;
+    let kA = multiply_edwards(&a, &pubkey_point).ok_or(SignatureError::InvalidPublicKey)?;
     let R = subtract_edwards(&sB, &kA).ok_or(SignatureError::InvalidSignature)?;
 
     let expected_R = sig_R.0;
@@ -164,7 +150,27 @@ fn verify_internal(
     if expected_R == computed_R {
         Ok(())
     } else {
-        Err(SignatureError::InvalidAccountOwner)
+        Err(SignatureError::InvalidSignature)
+    }
+}
+
+#[inline(always)]
+fn validate_pubkey(pubkey: &PodEdwardsPoint) -> Result<(), SignatureError> {
+    // Keep the explicit curve check even though decompression in the curve shim
+    // already performs it. This preserves a stable error mapping for callers.
+    if !validate_edwards(pubkey) || is_small_order(pubkey) {
+        Err(SignatureError::InvalidPublicKey)
+    } else {
+        Ok(())
+    }
+}
+
+#[inline(always)]
+fn validate_signature_point(sig_r: &PodEdwardsPoint) -> Result<(), SignatureError> {
+    if !validate_edwards(sig_r) || is_small_order(sig_r) {
+        Err(SignatureError::InvalidSignature)
+    } else {
+        Ok(())
     }
 }
 
@@ -288,6 +294,41 @@ mod tests {
         assert!(sig_verify(&pubkey, &sig, "hello world".as_bytes()).is_ok());
         assert!(verify::<Sha512>(&pubkey, &sig, "hello world".as_bytes()).is_ok());
         assert!(sig_verify(&pubkey, &sig, "not the right message".as_bytes()).is_err());
+    }
+
+    #[test]
+    fn test_error_invalid_public_key() {
+        let pubkey = identity().0;
+        let sig: [u8; 64] = [
+            164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
+            28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33, 35, 102, 183, 203, 111, 33,
+            55, 170, 180, 138, 92, 196, 185, 201, 122, 167, 15, 112, 9, 228, 226, 112, 111, 10,
+            142, 73, 85, 43, 81, 152, 204, 13,
+        ];
+
+        assert_eq!(
+            sig_verify(&pubkey, &sig, "hello world".as_bytes()),
+            Err(SignatureError::InvalidPublicKey)
+        );
+    }
+
+    #[test]
+    fn test_error_invalid_signature() {
+        let pubkey: [u8; 32] = [
+            73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233,
+            49, 154, 201, 171, 175, 47, 6, 223, 101, 105, 80, 95, 166,
+        ];
+        let sig: [u8; 64] = [
+            164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
+            28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33, 35, 102, 183, 203, 111, 33,
+            55, 170, 180, 138, 92, 196, 185, 201, 122, 167, 15, 112, 9, 228, 226, 112, 111, 10,
+            142, 73, 85, 43, 81, 152, 204, 13,
+        ];
+
+        assert_eq!(
+            sig_verify(&pubkey, &sig, "not the right message".as_bytes()),
+            Err(SignatureError::InvalidSignature)
+        );
     }
 
     #[test]
