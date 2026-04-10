@@ -47,9 +47,11 @@ Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/d
 
 ```rust
 use brine_ed25519::*;
-
 let pubkey: [u8; 32] = [...];
 let sig: [u8; 64] = [...];
+
+let message = b"hello world";
+verify::<Sha512>(&pubkey, &sig, message)?;
 
 let message = b"hello world";
 sig_verify(&pubkey, &sig, message)?;
@@ -67,10 +69,7 @@ Custom verifier hashers are supported via `sig_verify_with` and
 
 ```rust
 let message = b"hello world";
-sig_verify_with::<Blake3>(&pubkey, &sig, message)?;
-
-let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
-sig_verifyv_with::<Blake3>(&pubkey, &sig, messagev)?;
+verify::<Blake3>(&pubkey, &sig, message)?;
 ```
 
 Implement the `Hasher` trait for your verifier hasher type.
