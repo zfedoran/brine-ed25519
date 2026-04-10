@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 use core::mem::MaybeUninit;
 use sha2::{ Digest, Sha512 };
@@ -114,15 +114,17 @@ fn split_signature(sig: &[u8; 64]) -> ([u8; 32], [u8; 32]) {
     // SAFETY: The length of `sig` is 64 bytes, we're copying 32 bytes into
     // `sig_lower` and `sig_upper` respectively.
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            sig.as_ptr(), 
-            sig_lower.as_mut_ptr() as *mut u8, 
-            32);
+        core::ptr::copy_nonoverlapping(
+            sig.as_ptr(),
+            sig_lower.as_mut_ptr() as *mut u8,
+            32,
+        );
 
-        std::ptr::copy_nonoverlapping(
-            sig.as_ptr().add(32), 
-            sig_upper.as_mut_ptr() as *mut u8, 
-            32);
+        core::ptr::copy_nonoverlapping(
+            sig.as_ptr().add(32),
+            sig_upper.as_mut_ptr() as *mut u8,
+            32,
+        );
 
         (sig_lower.assume_init(), sig_upper.assume_init())
     }
