@@ -15,13 +15,15 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 | Operation    | CU (Approx.) |
 |--------------|--------------|
-| `sig_verify` |      ~30,000 |
+| `sig_verify` |      ~27,026 |
+| `sig_verifyv` |     ~27,299 |
+| `sig_verify_prehashed` | ~27,033 |
 
-These value was measured inside the Solana SVM (via test programs), it depends on the size of the data (32 bytes in this case).
+These values were measured inside the Solana SVM via `test-program/`. They depend on message size and message partitioning; the numbers above come from the included benchmark cases.
 
 ---
 
-## ✨ Features
+## Features
 
 - Verifies Ed25519 signatures **within the program**, at run-time
 - Fully supports dynamically generated messages
@@ -31,8 +33,9 @@ Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/d
 
 ---
 
-## 🧱 Use Cases
+## Use Cases
 
+- Programmable signature verification (e.g. replacing durable nonces)
 - Signed content or metadata validation
 - Meta-transactions & gasless relays
 - Custom auth with off-chain signatures
@@ -66,7 +69,21 @@ Returns `Ok(())` if valid, or `Err(SignatureError)` if the signature is invalid.
 
 ---
 
-## 🧠 But why?
+## SVM Tests
+
+A minimal Solana test program lives in `test-program/`. It runs `sig_verify`, `sig_verifyv`, and `sig_verify_prehashed` inside the SVM with Mollusk so you can catch runtime regressions and record compute usage.
+
+```bash
+cd test-program
+cargo build-sbf
+cargo test -- --ignored --nocapture
+```
+
+The ignored tests print the compute units consumed for each verification mode and assert broad ceilings to catch regressions without pinning exact CU counts too tightly.
+
+---
+
+## But why?
 
 **Q:** Why not use the native Ed25519 program?
 
@@ -82,17 +99,17 @@ This crate, **brine-ed25519**, solves all of that.
 
 ---
 
-## 🔐 Security
+## Security
 
 This implementation is pulled from [code-vm](https://github.com/code-payments/code-vm) (MIT-licensed), which was written and maintained by the author of this crate.
 
-- ✅ Reviewed as part of the [code-vm](https://github.com/code-payments/code-vm) audit by [OtterSec](https://osec.io)  
-- ✅ Peer reviewed by [@stegaBOB](https://github.com/stegaBOB) and [@deanmlittle](https://github.com/deanmlittle)  
+- Reviewed as part of the [code-vm](https://github.com/code-payments/code-vm) audit by [OtterSec](https://osec.io)  
+- Peer reviewed by [@stegaBOB](https://github.com/stegaBOB) and [@deanmlittle](https://github.com/deanmlittle)  
 
 Big thanks to both reviewers for helpful suggestions and CU reductions!
 
 ---
 
-## 🙌 Contributing
+## Contributing
 
 Contributions are welcome! Please open issues or PRs on the GitHub repo.
