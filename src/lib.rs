@@ -1,11 +1,16 @@
 #![no_std]
 
 use core::mem::MaybeUninit;
-use curve25519_dalek::scalar::Scalar;
 use sha2::{Digest, Sha512};
-use solana_curve25519::{
-    edwards::{multiply_edwards, subtract_edwards, validate_edwards, PodEdwardsPoint},
-    scalar::PodScalar,
+use curve25519_dalek::scalar::Scalar;
+
+mod curve;
+use crate::curve::{
+    multiply_edwards, 
+    subtract_edwards, 
+    validate_edwards, 
+    PodEdwardsPoint, 
+    PodScalar,
 };
 
 const ED25519_SIG_LEN: usize = 64;
