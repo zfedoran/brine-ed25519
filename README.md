@@ -53,10 +53,12 @@ let sig: [u8; 64] = [...];
 let message = b"hello world";
 verify::<Sha512>(&pubkey, &sig, message)?;
 
-let message = b"hello world";
-sig_verify(&pubkey, &sig, message)?;
-
 let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
+verifyv::<Sha512>(&pubkey, &sig, messagev)?;
+
+// Or convenience aliases for the default hasher (Sha512):
+
+sig_verify(&pubkey, &sig, message)?;
 sig_verifyv(&pubkey, &sig, messagev)?;
 ```
 
@@ -64,12 +66,14 @@ Returns `Ok(())` if valid, or `Err(SignatureError)` if the signature is invalid.
 
 ## Custom Verifiers
 
-Custom verifier hashers are supported via `sig_verify_with` and
-`sig_verifyv_with`.
+Custom verifier hashers are supported via `verify` and `verifyv`.
 
 ```rust
 let message = b"hello world";
 verify::<Blake3>(&pubkey, &sig, message)?;
+
+let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
+verifyv::<Blake3>(&pubkey, &sig, messagev)?;
 ```
 
 Implement the `Hasher` trait for your verifier hasher type.
