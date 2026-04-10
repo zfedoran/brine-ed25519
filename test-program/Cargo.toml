@@ -1,0 +1,17 @@
+[package]
+name = "brine-ed25519-test"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "brine_ed25519_test"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+brine-ed25519 = { path = "../" }
+solana-program = "2.3.0"
+
+[dev-dependencies]
+mollusk-svm = "0.5.1"
+solana-sdk = "2.3.1"
