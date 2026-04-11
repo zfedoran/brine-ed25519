@@ -14,23 +14,16 @@ use crate::curve::{
 };
 use crate::hasher::Hasher;
 use crate::scalar::{
-    scalar_from_bytes_mod_order_wide, 
+    scalar_from_bytes_mod_order_wide,
     scalar_from_canonical_bytes
 };
+use solana_program_error::ProgramError;
 
 const ED25519_SIG_LEN:    usize = 64;
 const ED25519_PUBKEY_LEN: usize = 32;
 
 pub type Pubkey    = [u8; ED25519_PUBKEY_LEN];
 pub type Signature = [u8; ED25519_SIG_LEN];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignatureError {
-    /// The provided public key is not a valid non-small-order Edwards point.
-    InvalidPublicKey,
-    /// The signature is malformed or does not verify for the provided message.
-    InvalidSignature,
-}
 
 /// Compressed base point
 const G: [u8; 32] = [
@@ -45,7 +38,7 @@ pub fn verify<H: Hasher>(
     pubkey: &Pubkey,
     sig: &Signature,
     messages: &[&[u8]],
-) -> Result<(), SignatureError> {
+) -> Result<(), ProgramError> {
 
     // SAFETY: The length of `sig` is 64 bytes, so slicing the first 32 bytes is always valid.
     let sig_r_bytes: [u8; 32] = sig[..32]
@@ -67,7 +60,7 @@ pub fn verify_prehashed(
     pubkey: &Pubkey,
     sig: &Signature,
     challenge: &[u8; 64],
-) -> Result<(), SignatureError> {
+) -> Result<(), ProgramError> {
     // Normally, we could verify the signature using the Solana SDK or
     // dalek_ed25519, but those are too compute, stack, and heap heavy for the
     // SVM.
@@ -84,7 +77,7 @@ pub fn verify_prehashed(
 
     let sig_R = PodEdwardsPoint(sig_lower);
     let sig_s_bytes =
-        scalar_from_canonical_bytes(sig_upper).ok_or(SignatureError::InvalidSignature)?;
+        scalar_from_canonical_bytes(sig_upper).ok_or(ProgramError::InvalidArgument)?;
 
     validate_pubkey(&pubkey_point)?;
     validate_signature_point(&sig_R)?;
@@ -97,9 +90,9 @@ pub fn verify_prehashed(
 
     // R = sB - kA
 
-    let sB = multiply_edwards(&b, &B).ok_or(SignatureError::InvalidSignature)?;
-    let kA = multiply_edwards(&a, &pubkey_point).ok_or(SignatureError::InvalidPublicKey)?;
-    let R = subtract_edwards(&sB, &kA).ok_or(SignatureError::InvalidSignature)?;
+    let sB = multiply_edwards(&b, &B).ok_or(ProgramError::InvalidArgument)?;
+    let kA = multiply_edwards(&a, &pubkey_point).ok_or(ProgramError::InvalidArgument)?;
+    let R = subtract_edwards(&sB, &kA).ok_or(ProgramError::InvalidArgument)?;
 
     let expected_R = sig_R.0;
     let computed_R = R.0;
@@ -107,25 +100,25 @@ pub fn verify_prehashed(
     if expected_R == computed_R {
         Ok(())
     } else {
-        Err(SignatureError::InvalidSignature)
+        Err(ProgramError::InvalidArgument)
     }
 }
 
 #[inline(always)]
-fn validate_pubkey(pubkey: &PodEdwardsPoint) -> Result<(), SignatureError> {
+fn validate_pubkey(pubkey: &PodEdwardsPoint) -> Result<(), ProgramError> {
     // Keep the explicit curve check even though decompression in the curve shim
     // already performs it. This preserves a stable error mapping for callers.
     if !validate_edwards(pubkey) || is_small_order(pubkey) {
-        Err(SignatureError::InvalidPublicKey)
+        Err(ProgramError::InvalidArgument)
     } else {
         Ok(())
     }
 }
 
 #[inline(always)]
-fn validate_signature_point(sig_r: &PodEdwardsPoint) -> Result<(), SignatureError> {
+fn validate_signature_point(sig_r: &PodEdwardsPoint) -> Result<(), ProgramError> {
     if !validate_edwards(sig_r) || is_small_order(sig_r) {
-        Err(SignatureError::InvalidSignature)
+        Err(ProgramError::InvalidArgument)
     } else {
         Ok(())
     }
@@ -248,7 +241,7 @@ mod tests {
 
         assert_eq!(
             verify::<Sha512>(&pubkey, &sig, &[b"hello world"]),
-            Err(SignatureError::InvalidPublicKey)
+            Err(ProgramError::InvalidArgument)
         );
     }
 
@@ -267,7 +260,7 @@ mod tests {
 
         assert_eq!(
             verify::<Sha512>(&pubkey, &sig, &[b"not the right message"]),
-            Err(SignatureError::InvalidSignature)
+            Err(ProgramError::InvalidArgument)
         );
     }
 

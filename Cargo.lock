@@ -13,12 +13,13 @@ dependencies = [
 
 [[package]]
 name = "brine-ed25519"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "curve25519-dalek",
  "rand",
  "sha2",
  "solana-define-syscall",
+ "solana-program-error",
 ]
 
 [[package]]
@@ -202,6 +203,12 @@ name = "solana-define-syscall"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ae3e2abcf541c8122eafe9a625d4d194b4023c20adde1e251f94e056bb1aee2"
+
+[[package]]
+name = "solana-program-error"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f04fa578707b3612b095f0c8e19b66a1233f7c42ca8082fcb3b745afcc0add6"
 
 [[package]]
 name = "subtle"
