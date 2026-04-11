@@ -15,7 +15,7 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 | Operation         | CU (Approx.) |
 |-------------------|--------------|
-| `verify`          |      ~23,466 |
+| `verify`          |      ~19,114 |
 
 This value is measured inside the Solana SVM via `test-program/` and depends on the message size.
 
