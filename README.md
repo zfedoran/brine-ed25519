@@ -13,9 +13,9 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 ## ⚡ Performance
 
-| Operation    | CU (Approx.) |
-|--------------|--------------|
-| `sig_verify` |      ~23,475 |
+| Operation         | CU (Approx.) |
+|-------------------|--------------|
+| `verify`          |      ~23,466 |
 
 This value is measured inside the Solana SVM via `test-program/` and depends on the message size.
 
@@ -35,22 +35,22 @@ Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/d
 
 ```rust
 use brine_ed25519::*;
+use brine_ed25519::hasher::Sha512;
+
 let pubkey: [u8; 32] = [...];
 let sig: [u8; 64] = [...];
 
-let message = b"hello world";
-verify::<Sha512>(&pubkey, &sig, message)?;
+// Single message
+verify::<Sha512>(&pubkey, &sig, &[b"hello world"])?;
 
-let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
-verifyv::<Sha512>(&pubkey, &sig, messagev)?;
+// Vectored message
+verify::<Sha512>(&pubkey, &sig, &[b"hello", b" ", b"world"])?;
 
-// Or convenience aliases for the default hasher (Sha512):
-
-sig_verify(&pubkey, &sig, message)?;
-sig_verifyv(&pubkey, &sig, messagev)?;
+// Prehashed challenge (precomputed H(R || A || M))
+verify_prehashed(&pubkey, &sig, &challenge)?;
 ```
 
-Custom verifier hashers are supported via `verify` and `verifyv` using the `Hasher` trait.
+Custom hash implementations are supported via the `Hasher` trait.
 
 ---
 
