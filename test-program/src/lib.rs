@@ -3,7 +3,6 @@
 
 use brine_ed25519::{verify, hasher::Sha512};
 use pinocchio::{
-    error::ProgramError, 
     default_allocator, nostd_panic_handler, program_entrypoint, 
     AccountView, Address, ProgramResult,
 };
@@ -30,7 +29,6 @@ fn process_instruction(
     _instruction_data: &[u8],
 ) -> ProgramResult {
     verify::<Sha512>(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, &[b"hello world"])
-        .map_err(|_| ProgramError::Custom(1))
 }
 
 #[cfg(test)]
