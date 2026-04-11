@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(unexpected_cfgs)]
 
-use brine_ed25519::sig_verify;
+use brine_ed25519::{verify, hasher::Sha512};
 use pinocchio::{
     error::ProgramError, 
     default_allocator, nostd_panic_handler, program_entrypoint, 
@@ -29,7 +29,7 @@ fn process_instruction(
     _accounts: &mut [AccountView],
     _instruction_data: &[u8],
 ) -> ProgramResult {
-    sig_verify(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, b"hello world")
+    verify::<Sha512>(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, &[b"hello world"])
         .map_err(|_| ProgramError::Custom(1))
 }
 
@@ -39,7 +39,7 @@ mod tests {
     use solana_instruction::Instruction;
 
     #[test]
-    fn test_sig_verify() {
+    fn test_verify() {
         let mollusk = Mollusk::new( &[0x02;32].into(), "target/deploy/brine_ed25519_test");
 
         let result = mollusk.process_instruction(
@@ -47,7 +47,7 @@ mod tests {
             &[],
         );
 
-        println!("sig_verify consumed {} CUs", result.compute_units_consumed);
+        println!("verify consumed {} CUs", result.compute_units_consumed);
         assert!(matches!(result.program_result, ProgramResult::Success), "{result:?}");
     }
 }
