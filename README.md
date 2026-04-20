@@ -4,9 +4,6 @@
 ![license][license-image]
 [![crates.io](https://img.shields.io/crates/v/brine-ed25519.svg?style=flat)](https://crates.io/crates/brine-ed25519)
 
-![image](https://github.com/user-attachments/assets/cc354cf3-b82d-40c6-8c9a-9902fae146f0)
-
-
 A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 ---
@@ -74,12 +71,16 @@ This crate, **brine-ed25519**, solves all of that.
 
 ## Security
 
-This implementation is pulled from [code-vm](https://github.com/code-payments/code-vm) (MIT-licensed), which was written and maintained by the author of this crate.
+The implementation was pulled from [code-vm](https://github.com/code-payments/code-vm) (MIT-licensed), which was written and maintained by the author of this crate. 
 
 - Reviewed as part of the [code-vm](https://github.com/code-payments/code-vm) audit by [OtterSec](https://osec.io)  
-- Peer reviewed by [@stegaBOB](https://github.com/stegaBOB) and [@deanmlittle](https://github.com/deanmlittle)  
+- Peer reviewed by [@stegaBOB](https://github.com/stegaBOB) and [@deanmlittle](https://github.com/deanmlittle)
+- Many CU optimizations by [@deanmlittle](https://github.com/deanmlittle)
 
 Big thanks to both reviewers for helpful suggestions and CU reductions!
+
+> [!NOTE]
+> This crate has had multiple rounds of optimizations since the audits above. If you prefer the to use the audited version, use v0.2.0 or lower, but note that the CU is more than double. 
 
 ---
 
