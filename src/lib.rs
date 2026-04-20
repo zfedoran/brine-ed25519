@@ -6,7 +6,7 @@ mod scalar;
 
 use crate::curve::multiscalar_multiply_edwards;
 use crate::hasher::Hasher;
-use crate::scalar::scalar_from_bytes_mod_order_wide;
+use crate::scalar::scalar_from_bytes_mod_order_wide_into;
 pub use solana_address::Address;
 use solana_program_error::ProgramError;
 
@@ -56,9 +56,9 @@ pub fn verify<H: Hasher>(
 /// If any of those checks fail the MSM returns `None`, which we map to
 /// `ProgramError::InvalidArgument`.
 ///
-/// **Small-order rejection** is *not* performed by the MSM syscall.
-/// This matches the behavior of the Ed25519 precompile, which does not
-/// reject small-order public keys or R values either.
+/// **Small-order rejection** *is* performed here (for both `pubkey` and
+/// `R`) via a table lookup against the eight torsion points. The MSM
+/// syscall does not do this check itself.
 #[inline(always)]
 #[allow(non_snake_case)]
 pub fn verify_prehashed(
@@ -70,11 +70,21 @@ pub fn verify_prehashed(
     // SAFETY: [u8; 64] has the same layout as [[u8; 32]; 2].
     let (sig_r, sig_s): &([u8; 32], [u8; 32]) = unsafe { &*(sig as *const [u8; 64] as *const _) };
 
-    let k_bytes = scalar_from_bytes_mod_order_wide(challenge);
-
-    let scalars = [*sig_s, k_bytes];
     // SAFETY: Address is #[repr(transparent)] over [u8; 32].
     let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
+
+    // Reject small-order pubkey and R. These would allow forgeries that
+    // verify against any message, so we check even though the MSM does not.
+    if is_small_order(pubkey_bytes) || is_small_order(sig_r) {
+        return Err(ProgramError::InvalidArgument);
+    }
+
+    // Build the [[u8; 32]; 2] scalar array in place so that the reduced `k`
+    // limbs can be written straight into the MSM input slot instead of
+    // materializing through a separate 32-byte stack temporary.
+    let mut scalars: [[u8; 32]; 2] = [*sig_s, [0u8; 32]];
+    scalar_from_bytes_mod_order_wide_into(challenge, &mut scalars[1]);
+
     let points = [NEG_G, *pubkey_bytes];
 
     // msm([s, k], [-G, A]) = s*(-G) + k*A = k*A - s*G = -(s*G - k*A) = -R
@@ -115,7 +125,9 @@ const G: [u8; 32] = [
     102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102,
 ];
 
-#[cfg(test)]
+/// The eight small-order (torsion) points on Curve25519, in compressed
+/// Edwards form. Any point matching one of these is rejected during
+/// signature verification.
 const EIGHT_TORSION: [[u8; 32]; 8] = [
     [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
     [0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67, 0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0x7a],
@@ -127,7 +139,9 @@ const EIGHT_TORSION: [[u8; 32]; 8] = [
     [0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67, 0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0xfa],
 ];
 
-#[cfg(test)]
+/// Determine if this point is of small order by checking against the
+/// eight known torsion points (table lookup, no curve syscalls).
+#[inline(always)]
 fn is_small_order(point: &[u8; 32]) -> bool {
     EIGHT_TORSION.iter().any(|t| *t == *point)
 }
