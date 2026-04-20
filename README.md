@@ -15,7 +15,7 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 | Operation         | CU (Approx.) |
 |-------------------|--------------|
-| `verify`          |      ~12,953 |
+| `verify`          |      ~12,979 |
 
 This value is measured inside the Solana SVM via `test-program/` and depends on the message size.
 
@@ -60,7 +60,6 @@ Custom hash implementations are supported via the `Hasher` trait.
 
 **A:** Solana does provide a [Ed25519 pre-compile](https://github.com/solana-labs/solana/blob/master/sdk/src/ed25519_instruction.rs) program for signature verification—but it comes with several downsides:
 
-- Costs **more CUs** than the multiscalar multiplication syscall
 - Charges an extra **5000 lamports per signature**
 - Consumes additional transaction data
 - Requires the `instruction_sysvar` to be passed into your program
