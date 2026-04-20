@@ -12,7 +12,7 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 | Operation         | CU (Approx.) |
 |-------------------|--------------|
-| `verify`          |      ~12,979 |
+| `verify`          |      ~12,581 |
 
 This value is measured inside the Solana SVM via `test-program/` and depends on the message size.
 
@@ -75,8 +75,9 @@ The implementation was pulled from [code-vm](https://github.com/code-payments/co
 - Reviewed as part of the [code-vm](https://github.com/code-payments/code-vm) audit by [OtterSec](https://osec.io)  
 - Peer reviewed by [@stegaBOB](https://github.com/stegaBOB) and [@deanmlittle](https://github.com/deanmlittle)
 - Many CU optimizations by [@deanmlittle](https://github.com/deanmlittle)
+- Small optimizations by [@crypt0miester](https://github.com/crypt0miester)
 
-Big thanks to both reviewers for helpful suggestions and CU reductions!
+Big thanks to all reviewers for helpful suggestions and CU reductions!
 
 > [!NOTE]
 > This crate has had multiple rounds of optimizations since the audits above. If you prefer the to use the audited version, use v0.2.0 or lower, but note that the CU is more than double. 
