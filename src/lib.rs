@@ -6,7 +6,7 @@ mod scalar;
 
 use crate::curve::multiscalar_multiply_edwards;
 use crate::hasher::Hasher;
-use crate::scalar::scalar_from_bytes_mod_order_wide;
+use crate::scalar::scalar_from_bytes_mod_order_wide_into;
 pub use solana_address::Address;
 use solana_program_error::ProgramError;
 
@@ -79,9 +79,12 @@ pub fn verify_prehashed(
         return Err(ProgramError::InvalidArgument);
     }
 
-    let k_bytes = scalar_from_bytes_mod_order_wide(challenge);
+    // Build the [[u8; 32]; 2] scalar array in place so that the reduced `k`
+    // limbs can be written straight into the MSM input slot instead of
+    // materializing through a separate 32-byte stack temporary.
+    let mut scalars: [[u8; 32]; 2] = [*sig_s, [0u8; 32]];
+    scalar_from_bytes_mod_order_wide_into(challenge, &mut scalars[1]);
 
-    let scalars = [*sig_s, k_bytes];
     let points = [NEG_G, *pubkey_bytes];
 
     // msm([s, k], [-G, A]) = s*(-G) + k*A = k*A - s*G = -(s*G - k*A) = -R

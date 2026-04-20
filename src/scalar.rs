@@ -12,18 +12,31 @@
 //! Host builds still use `curve25519-dalek` as the reference implementation so
 //! tests and off-chain callers stay aligned with the Solana path.
 
+/// Write `Scalar::from_bytes_mod_order_wide(input)` into `out`.
+///
+/// The out-param form lets callers place the reduced bytes directly into a
+/// larger buffer (e.g. an MSM scalar array) rather than through a by-value
+/// `[u8; 32]` return, which on sBPF tends to add a redundant stack copy.
 #[cfg(not(any(target_arch = "bpf", target_os = "solana")))]
-pub(crate) fn scalar_from_bytes_mod_order_wide(input: &[u8; 64]) -> [u8; 32] {
-    curve25519_dalek::scalar::Scalar::from_bytes_mod_order_wide(input).to_bytes()
+pub(crate) fn scalar_from_bytes_mod_order_wide_into(input: &[u8; 64], out: &mut [u8; 32]) {
+    *out = curve25519_dalek::scalar::Scalar::from_bytes_mod_order_wide(input).to_bytes();
 }
 
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
-pub(crate) fn scalar_from_bytes_mod_order_wide(input: &[u8; 64]) -> [u8; 32] {
-    barrett32::scalar_from_bytes_mod_order_wide(input)
+pub(crate) fn scalar_from_bytes_mod_order_wide_into(input: &[u8; 64], out: &mut [u8; 32]) {
+    barrett32::scalar_from_bytes_mod_order_wide_into(input, out);
 }
+
 
 #[cfg(any(target_arch = "bpf", target_os = "solana", test))]
 mod barrett32 {
+    #[cfg(test)]
+    pub(super) fn scalar_from_bytes_mod_order_wide(input: &[u8; 64]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        scalar_from_bytes_mod_order_wide_into(input, &mut out);
+        out
+    }
+
     /// Ed25519 group order L as 8 × u32 limbs (little-endian).
     const L: [u32; 8] = [
         0x5cf5d3ed, 0x5812631a, 0xa2f79cd6, 0x14def9de,
@@ -43,21 +56,27 @@ mod barrett32 {
     fn mul_x_mu(x: &[u32; 16]) -> [u32; 9] {
         let mut result = [0u32; 25];
 
-        for i in 0..16 {
-            let mut carry = 0u64;
-            for j in 0..9 {
-                carry += (x[i] as u64) * (MU[j] as u64) + result[i + j] as u64;
-                result[i + j] = carry as u32;
-                carry >>= 32;
-            }
-            let mut k = i + 9;
-            while carry > 0 && k < 25 {
-                carry += result[k] as u64;
-                result[k] = carry as u32;
-                carry >>= 32;
-                k += 1;
-            }
+        // Hand-unrolled outer loop. Pinning `x[I]` as a single u64 across the
+        // nine inner mac steps lets LLVM's BPF backend keep it in a register
+        // instead of reloading from the stack each iteration. After the
+        // 9-iter mac, `carry` is bounded by 2^32-1, and result[I+9] has never
+        // been written before — so a direct store replaces the old cascade.
+        macro_rules! mac_row {
+            ($i:expr) => {{
+                let xi = x[$i] as u64;
+                let mut carry = 0u64;
+                for j in 0..9 {
+                    carry += xi * (MU[j] as u64) + result[$i + j] as u64;
+                    result[$i + j] = carry as u32;
+                    carry >>= 32;
+                }
+                result[$i + 9] = carry as u32;
+            }};
         }
+        mac_row!(0);  mac_row!(1);  mac_row!(2);  mac_row!(3);
+        mac_row!(4);  mac_row!(5);  mac_row!(6);  mac_row!(7);
+        mac_row!(8);  mac_row!(9);  mac_row!(10); mac_row!(11);
+        mac_row!(12); mac_row!(13); mac_row!(14); mac_row!(15);
 
         [
             result[16], result[17], result[18], result[19],
@@ -129,16 +148,16 @@ mod barrett32 {
     }
 
     #[inline(always)]
-    pub(super) fn scalar_from_bytes_mod_order_wide(input: &[u8; 64]) -> [u8; 32] {
-        // Parse input as 16 × u32 limbs (little-endian).
+    pub(super) fn scalar_from_bytes_mod_order_wide_into(input: &[u8; 64], out: &mut [u8; 32]) {
+        // Parse input as 16 × u32 limbs via one unaligned load per limb. sBPF
+        // accepts unaligned u32 access, and this lets LLVM drop the per-byte
+        // shuffle the `from_le_bytes` construction used to emit.
         let mut x = [0u32; 16];
+        let src = input.as_ptr() as *const u32;
         for i in 0..16 {
-            x[i] = u32::from_le_bytes([
-                input[i * 4],
-                input[i * 4 + 1],
-                input[i * 4 + 2],
-                input[i * 4 + 3],
-            ]);
+            // SAFETY: `src` points to a [u8; 64] covering 16 aligned-or-unaligned
+            // u32 slots; `i` is in range.
+            x[i] = u32::from_le(unsafe { core::ptr::read_unaligned(src.add(i)) });
         }
 
         // q_hat = (x * μ) >> 512
@@ -161,12 +180,13 @@ mod barrett32 {
             r = r2;
         }
 
-        // Serialize the low 8 limbs as 32 bytes LE.
-        let mut out = [0u8; 32];
-        for i in 0..8 {
-            out[i * 4..i * 4 + 4].copy_from_slice(&r[i].to_le_bytes());
+        // Serialize the low 8 limbs as 32 bytes LE via a single 32-byte copy.
+        // On sBPF the 8 × u32 limbs are already stored in little-endian order,
+        // so the raw byte image of `r[..8]` equals the canonical output bytes.
+        // SAFETY: `r` has at least 8 × 4 = 32 bytes from its start; `out` is 32 bytes.
+        unsafe {
+            core::ptr::copy_nonoverlapping(r.as_ptr() as *const u8, out.as_mut_ptr(), 32);
         }
-        out
     }
 }
 
