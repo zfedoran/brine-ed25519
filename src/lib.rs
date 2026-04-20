@@ -1,52 +1,37 @@
 #![no_std]
-use core::mem::MaybeUninit;
 
 pub mod hasher;
 mod curve;
 mod scalar;
 
-use crate::curve::{
-    multiply_edwards,
-    subtract_edwards,
-    validate_edwards,
-    PodEdwardsPoint,
-    PodScalar,
-};
+use crate::curve::multiscalar_multiply_edwards;
 use crate::hasher::Hasher;
-use crate::scalar::{
-    scalar_from_bytes_mod_order_wide,
-    scalar_from_canonical_bytes
-};
+use crate::scalar::scalar_from_bytes_mod_order_wide;
+pub use solana_address::Address;
 use solana_program_error::ProgramError;
 
-const ED25519_SIG_LEN:    usize = 64;
-const ED25519_PUBKEY_LEN: usize = 32;
+pub type Signature = [u8; 64];
 
-pub type Pubkey    = [u8; ED25519_PUBKEY_LEN];
-pub type Signature = [u8; ED25519_SIG_LEN];
-
-/// Compressed base point
-const G: [u8; 32] = [
+/// Negated compressed base point (-G). Identical to G with the sign bit
+/// (bit 7 of the last byte) flipped. Used so that the signature check
+/// `R == sB - kA` can be rewritten as a single multiscalar multiplication:
+/// `msm([s, k], [-G, A]) == -R`.
+const NEG_G: [u8; 32] = [
     88, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102,
-    102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102,
+    102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 230,
 ];
 
 /// Verify an ed25519 signature over a vectored message using the provided
 /// hash implementation.
 #[inline(always)]
 pub fn verify<H: Hasher>(
-    pubkey: &Pubkey,
+    pubkey: &Address,
     sig: &Signature,
     messages: &[&[u8]],
 ) -> Result<(), ProgramError> {
-
-    // SAFETY: The length of `sig` is 64 bytes, so slicing the first 32 bytes is always valid.
-    let sig_r_bytes: [u8; 32] = sig[..32]
-        .try_into()
-        .unwrap();
-
-    let sig_r = PodEdwardsPoint(sig_r_bytes);
-    let challenge = challenge::<H>(&sig_r, pubkey, messages);
+    // SAFETY: first 32 bytes of [u8; 64] is a valid [u8; 32].
+    let sig_r: &[u8; 32] = unsafe { &*(sig.as_ptr() as *const [u8; 32]) };
+    let challenge = challenge::<H>(sig_r, pubkey, messages);
 
     verify_prehashed(pubkey, sig, &challenge)
 }
@@ -54,85 +39,68 @@ pub fn verify<H: Hasher>(
 /// Verify an ed25519 signature using a precomputed challenge hash `H(R || A || M)`.
 /// This is useful in cases where the challenge hash needs to be computed off-chain
 /// or pre-computed on-chain for efficiency reasons.
+///
+/// # Safety (validation delegated to the MSM syscall)
+///
+/// The following checks are intentionally omitted because the Solana
+/// `sol_curve_multiscalar_mul` syscall already performs them internally
+/// (see `agave/curves/curve25519/src/edwards.rs` and `scalar.rs`):
+///
+/// - **Point decompression / on-curve check** for both `pubkey` and the
+///   constant `-G`: the syscall calls `CompressedEdwardsY::decompress()`
+///   on every point and returns failure if decompression fails.
+/// - **Scalar canonicality** of `s` (the upper half of the signature):
+///   the syscall calls `Scalar::from_canonical_bytes()` on every scalar
+///   and returns failure if the scalar is non-canonical.
+///
+/// If any of those checks fail the MSM returns `None`, which we map to
+/// `ProgramError::InvalidArgument`.
+///
+/// **Small-order rejection** is *not* performed by the MSM syscall.
+/// This matches the behavior of the Ed25519 precompile, which does not
+/// reject small-order public keys or R values either.
 #[inline(always)]
 #[allow(non_snake_case)]
 pub fn verify_prehashed(
-    pubkey: &Pubkey,
+    pubkey: &Address,
     sig: &Signature,
     challenge: &[u8; 64],
 ) -> Result<(), ProgramError> {
-    // Normally, we could verify the signature using the Solana SDK or
-    // dalek_ed25519, but those are too compute, stack, and heap heavy for the
-    // SVM.
-
-    // Refer to https://datatracker.ietf.org/doc/html/rfc8032 for rough outline
-    // of the ed25519 signature verification process.
-
-    // Roughly follows the dalek ed25519 crate, but with some changes for the
-    // SVM. Refer to
-    // https://github.com/dalek-cryptography/curve25519-dalek/blob/0964f800ab2114a862543ca000291a6e3531c203/ed25519-dalek/src/verifying.rs#L401
-
-    let pubkey_point = PodEdwardsPoint(*pubkey);
-    let (sig_lower, sig_upper) = split_signature(sig);
-
-    let sig_R = PodEdwardsPoint(sig_lower);
-    let sig_s_bytes =
-        scalar_from_canonical_bytes(sig_upper).ok_or(ProgramError::InvalidArgument)?;
-
-    validate_pubkey(&pubkey_point)?;
-    validate_signature_point(&sig_R)?;
+    // Split signature into R (first 32 bytes) and s (last 32 bytes).
+    // SAFETY: [u8; 64] has the same layout as [[u8; 32]; 2].
+    let (sig_r, sig_s): &([u8; 32], [u8; 32]) = unsafe { &*(sig as *const [u8; 64] as *const _) };
 
     let k_bytes = scalar_from_bytes_mod_order_wide(challenge);
 
-    let a = PodScalar(k_bytes);
-    let b = PodScalar(sig_s_bytes);
-    let B = PodEdwardsPoint(G);
+    let scalars = [*sig_s, k_bytes];
+    // SAFETY: Address is #[repr(transparent)] over [u8; 32].
+    let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
+    let points = [NEG_G, *pubkey_bytes];
 
-    // R = sB - kA
+    // msm([s, k], [-G, A]) = s*(-G) + k*A = k*A - s*G = -(s*G - k*A) = -R
+    let neg_R = multiscalar_multiply_edwards(&scalars, &points)
+        .ok_or(ProgramError::InvalidArgument)?;
 
-    let sB = multiply_edwards(&b, &B).ok_or(ProgramError::InvalidArgument)?;
-    let kA = multiply_edwards(&a, &pubkey_point).ok_or(ProgramError::InvalidArgument)?;
-    let R = subtract_edwards(&sB, &kA).ok_or(ProgramError::InvalidArgument)?;
+    // Negate sig_R (flip sign bit) to compare against -R.
+    let mut neg_sig_R = *sig_r;
+    neg_sig_R[31] ^= 0x80;
 
-    let expected_R = sig_R.0;
-    let computed_R = R.0;
-
-    if expected_R == computed_R {
+    if neg_R == neg_sig_R {
         Ok(())
     } else {
         Err(ProgramError::InvalidArgument)
-    }
-}
-
-#[inline(always)]
-fn validate_pubkey(pubkey: &PodEdwardsPoint) -> Result<(), ProgramError> {
-    // Keep the explicit curve check even though decompression in the curve shim
-    // already performs it. This preserves a stable error mapping for callers.
-    if !validate_edwards(pubkey) || is_small_order(pubkey) {
-        Err(ProgramError::InvalidArgument)
-    } else {
-        Ok(())
-    }
-}
-
-#[inline(always)]
-fn validate_signature_point(sig_r: &PodEdwardsPoint) -> Result<(), ProgramError> {
-    if !validate_edwards(sig_r) || is_small_order(sig_r) {
-        Err(ProgramError::InvalidArgument)
-    } else {
-        Ok(())
     }
 }
 
 #[inline(always)]
 fn challenge<H: Hasher>(
-    sig_r: &PodEdwardsPoint,
-    pubkey: &Pubkey,
+    sig_r: &[u8; 32],
+    pubkey: &Address,
     messagev: &[&[u8]],
 ) -> [u8; 64] {
     let mut hasher = H::new();
-    hasher.update(&sig_r.0);
-    hasher.update(pubkey);
+    hasher.update(sig_r);
+    hasher.update(pubkey.as_ref());
 
     for message in messagev {
         hasher.update(message);
@@ -141,26 +109,13 @@ fn challenge<H: Hasher>(
     hasher.finalize()
 }
 
-/// Split the signature into two 32-byte arrays.
-#[inline(always)]
-fn split_signature(sig: &[u8; 64]) -> ([u8; 32], [u8; 32]) {
-    let mut sig_lower: MaybeUninit<[u8; 32]> = MaybeUninit::uninit();
-    let mut sig_upper: MaybeUninit<[u8; 32]> = MaybeUninit::uninit();
+#[cfg(test)]
+const G: [u8; 32] = [
+    88, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102,
+    102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102,
+];
 
-    // SAFETY: The length of `sig` is 64 bytes, we're copying 32 bytes into
-    // `sig_lower` and `sig_upper` respectively.
-    unsafe {
-        core::ptr::copy_nonoverlapping(sig.as_ptr(), sig_lower.as_mut_ptr() as *mut u8, 32);
-
-        core::ptr::copy_nonoverlapping(sig.as_ptr().add(32), sig_upper.as_mut_ptr() as *mut u8, 32);
-
-        (sig_lower.assume_init(), sig_upper.assume_init())
-    }
-}
-
-/// The eight small-order (torsion) points on Curve25519, in compressed
-/// Edwards form. Any point matching one of these is rejected during
-/// signature verification.
+#[cfg(test)]
 const EIGHT_TORSION: [[u8; 32]; 8] = [
     [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
     [0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67, 0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0x7a],
@@ -172,11 +127,9 @@ const EIGHT_TORSION: [[u8; 32]; 8] = [
     [0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67, 0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac, 0x03, 0xfa],
 ];
 
-/// Determine if this point is of small order by checking against the
-/// eight known torsion points (table lookup, no curve syscalls).
-#[inline(always)]
-fn is_small_order(point: &PodEdwardsPoint) -> bool {
-    EIGHT_TORSION.iter().any(|t| point.0 == *t)
+#[cfg(test)]
+fn is_small_order(point: &[u8; 32]) -> bool {
+    EIGHT_TORSION.iter().any(|t| *t == *point)
 }
 
 #[cfg(test)]
@@ -198,9 +151,7 @@ mod tests {
         // Refer to https://github.com/dalek-cryptography/curve25519-dalek/blob/43a16f03d4c635a8836c23ac07244c116ea3aab8/curve25519-dalek/src/edwards.rs#L1992
 
         // Base point (has large order)
-        let base_point_bytes = G;
-        let base_point = PodEdwardsPoint(base_point_bytes);
-        assert_eq!(is_small_order(&base_point), false);
+        assert_eq!(is_small_order(&G), false);
 
         // Torsion points (have small order)
         for i in 0..8 {
@@ -208,16 +159,17 @@ mod tests {
             let compressed = torsion_point.compress();
             let torsion_point_bytes = compressed.to_bytes();
             assert_eq!(torsion_point_bytes, EIGHT_TORSION[i], "torsion point {i} mismatch");
-            assert_eq!(is_small_order(&PodEdwardsPoint(torsion_point_bytes)), true);
+            assert_eq!(is_small_order(&torsion_point_bytes), true);
         }
     }
 
+
     #[test]
     fn test_hello_world() {
-        let pubkey: [u8; 32] = [
+        let pubkey = Address::from([
             73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233,
             49, 154, 201, 171, 175, 47, 6, 223, 101, 105, 80, 95, 166,
-        ];
+        ]);
         let sig: [u8; 64] = [
             164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
             28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33, 35, 102, 183, 203, 111, 33,
@@ -231,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_error_invalid_public_key() {
-        let pubkey = EIGHT_TORSION[0];
+        let pubkey = Address::from(EIGHT_TORSION[0]);
         let sig: [u8; 64] = [
             164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
             28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33, 35, 102, 183, 203, 111, 33,
@@ -247,10 +199,10 @@ mod tests {
 
     #[test]
     fn test_error_invalid_signature() {
-        let pubkey: [u8; 32] = [
+        let pubkey = Address::from([
             73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233,
             49, 154, 201, 171, 175, 47, 6, 223, 101, 105, 80, 95, 166,
-        ];
+        ]);
         let sig: [u8; 64] = [
             164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
             28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33, 35, 102, 183, 203, 111, 33,
@@ -266,10 +218,10 @@ mod tests {
 
     #[test]
     fn test_hello_worldv() {
-        let pubkey: [u8; 32] = [
+        let pubkey = Address::from([
             73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233,
             49, 154, 201, 171, 175, 47, 6, 223, 101, 105, 80, 95, 166,
-        ];
+        ]);
         let sig: [u8; 64] = [
             164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
             28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33, 35, 102, 183, 203, 111, 33,
@@ -286,11 +238,11 @@ mod tests {
 
     #[test]
     fn test_vector_1() {
-        let pubkey: [u8; 32] = [
+        let pubkey = Address::from([
             0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
             0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68,
             0xf7, 0x07, 0x51, 0x1a,
-        ];
+        ]);
 
         let sig: [u8; 64] = [
             0xe5, 0x56, 0x43, 0x00, 0xc3, 0x60, 0xac, 0x72, 0x90, 0x86, 0xe2, 0xcc, 0x80, 0x6e,
@@ -306,11 +258,11 @@ mod tests {
 
     #[test]
     fn test_vector_2() {
-        let pubkey: [u8; 32] = [
+        let pubkey = Address::from([
             0x3d, 0x40, 0x17, 0xc3, 0xe8, 0x43, 0x89, 0x5a, 0x92, 0xb7, 0x0a, 0xa7, 0x4d, 0x1b,
             0x7e, 0xbc, 0x9c, 0x98, 0x2c, 0xcf, 0x2e, 0xc4, 0x96, 0x8c, 0xc0, 0xcd, 0x55, 0xf1,
             0x2a, 0xf4, 0x66, 0x0c,
-        ];
+        ]);
 
         let sig: [u8; 64] = [
             0x92, 0xa0, 0x09, 0xa9, 0xf0, 0xd4, 0xca, 0xb8, 0x72, 0x0e, 0x82, 0x0b, 0x5f, 0x64,
@@ -326,11 +278,11 @@ mod tests {
 
     #[test]
     fn test_vector_3() {
-        let pubkey: [u8; 32] = [
+        let pubkey = Address::from([
             0xfc, 0x51, 0xcd, 0x8e, 0x62, 0x18, 0xa1, 0xa3, 0x8d, 0xa4, 0x7e, 0xd0, 0x02, 0x30,
             0xf0, 0x58, 0x08, 0x16, 0xed, 0x13, 0xba, 0x33, 0x03, 0xac, 0x5d, 0xeb, 0x91, 0x15,
             0x48, 0x90, 0x80, 0x25,
-        ];
+        ]);
 
         let sig: [u8; 64] = [
             0x62, 0x91, 0xd6, 0x57, 0xde, 0xec, 0x24, 0x02, 0x48, 0x27, 0xe6, 0x9c, 0x3a, 0xbe,
@@ -348,11 +300,11 @@ mod tests {
 
     #[test]
     fn test_prehashed() {
-        let pubkey: [u8; 32] = [
+        let pubkey = Address::from([
             0xfc, 0x51, 0xcd, 0x8e, 0x62, 0x18, 0xa1, 0xa3, 0x8d, 0xa4, 0x7e, 0xd0, 0x02, 0x30,
             0xf0, 0x58, 0x08, 0x16, 0xed, 0x13, 0xba, 0x33, 0x03, 0xac, 0x5d, 0xeb, 0x91, 0x15,
             0x48, 0x90, 0x80, 0x25,
-        ];
+        ]);
 
         let sig: [u8; 64] = [
             0x62, 0x91, 0xd6, 0x57, 0xde, 0xec, 0x24, 0x02, 0x48, 0x27, 0xe6, 0x9c, 0x3a, 0xbe,
@@ -372,18 +324,18 @@ mod tests {
 
     #[test]
     fn test_challenge_hashv() {
-        let sig_r = PodEdwardsPoint([
+        let sig_r: [u8; 32] = [
             164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
             28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33,
-        ]);
-        let pubkey = [
+        ];
+        let pubkey = Address::from([
             73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233,
             49, 154, 201, 171, 175, 47, 6, 223, 101, 105, 80, 95, 166,
-        ];
+        ]);
         let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
 
         let expected =
-            Sha512::hashv(&[sig_r.0.as_ref(), pubkey.as_ref(), b"hello", b" ", b"world"]);
+            Sha512::hashv(&[sig_r.as_ref(), pubkey.as_ref(), b"hello", b" ", b"world"]);
 
         assert_eq!(
             challenge::<Sha512>(&sig_r, &pubkey, messagev),
