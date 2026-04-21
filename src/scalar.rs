@@ -18,15 +18,16 @@
 /// larger buffer (e.g. an MSM scalar array) rather than through a by-value
 /// `[u8; 32]` return, which on sBPF tends to add a redundant stack copy.
 #[cfg(not(any(target_arch = "bpf", target_os = "solana")))]
+#[inline(always)]
 pub(crate) fn scalar_from_bytes_mod_order_wide_into(input: &[u8; 64], out: &mut [u8; 32]) {
     *out = curve25519_dalek::scalar::Scalar::from_bytes_mod_order_wide(input).to_bytes();
 }
 
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
+#[inline(always)]
 pub(crate) fn scalar_from_bytes_mod_order_wide_into(input: &[u8; 64], out: &mut [u8; 32]) {
     barrett32::scalar_from_bytes_mod_order_wide_into(input, out);
 }
-
 
 #[cfg(any(target_arch = "bpf", target_os = "solana", test))]
 mod barrett32 {
@@ -39,15 +40,14 @@ mod barrett32 {
 
     /// Ed25519 group order L as 8 × u32 limbs (little-endian).
     const L: [u32; 8] = [
-        0x5cf5d3ed, 0x5812631a, 0xa2f79cd6, 0x14def9de,
-        0x00000000, 0x00000000, 0x00000000, 0x10000000,
+        0x5cf5d3ed, 0x5812631a, 0xa2f79cd6, 0x14def9de, 0x00000000, 0x00000000, 0x00000000,
+        0x10000000,
     ];
 
     /// Barrett constant μ = floor(2^512 / L) as 9 × u32 limbs (little-endian).
     const MU: [u32; 9] = [
-        0x0a2c131b, 0xed9ce5a3, 0x086329a7, 0x2106215d,
-        0xffffffeb, 0xffffffff, 0xffffffff, 0xffffffff,
-        0x0000000f,
+        0x0a2c131b, 0xed9ce5a3, 0x086329a7, 0x2106215d, 0xffffffeb, 0xffffffff, 0xffffffff,
+        0xffffffff, 0x0000000f,
     ];
 
     /// Multiply a 16-limb number by the 9-limb constant MU, returning
@@ -73,15 +73,26 @@ mod barrett32 {
                 result[$i + 9] = carry as u32;
             }};
         }
-        mac_row!(0);  mac_row!(1);  mac_row!(2);  mac_row!(3);
-        mac_row!(4);  mac_row!(5);  mac_row!(6);  mac_row!(7);
-        mac_row!(8);  mac_row!(9);  mac_row!(10); mac_row!(11);
-        mac_row!(12); mac_row!(13); mac_row!(14); mac_row!(15);
+        mac_row!(0);
+        mac_row!(1);
+        mac_row!(2);
+        mac_row!(3);
+        mac_row!(4);
+        mac_row!(5);
+        mac_row!(6);
+        mac_row!(7);
+        mac_row!(8);
+        mac_row!(9);
+        mac_row!(10);
+        mac_row!(11);
+        mac_row!(12);
+        mac_row!(13);
+        mac_row!(14);
+        mac_row!(15);
 
         [
-            result[16], result[17], result[18], result[19],
-            result[20], result[21], result[22], result[23],
-            result[24],
+            result[16], result[17], result[18], result[19], result[20], result[21], result[22],
+            result[23], result[24],
         ]
     }
 
@@ -120,9 +131,7 @@ mod barrett32 {
         let mut borrow = 0u64;
 
         for i in 0..9 {
-            let diff = (a[i] as u64)
-                .wrapping_sub(b[i] as u64)
-                .wrapping_sub(borrow);
+            let diff = (a[i] as u64).wrapping_sub(b[i] as u64).wrapping_sub(borrow);
             result[i] = diff as u32;
             borrow = (diff >> 63) & 1;
         }
@@ -218,9 +227,9 @@ mod raw {
 
 #[cfg(test)]
 mod tests {
-    use super::{raw, barrett32};
-    use rand::{RngCore, SeedableRng};
+    use super::{barrett32, raw};
     use rand::rngs::{OsRng, StdRng};
+    use rand::{RngCore, SeedableRng};
 
     const FUZZ_RANDOM_CASES: u64 = 1_000_000;
 
@@ -380,7 +389,10 @@ mod tests {
 
         for input in cases {
             let expected = dalek_wide(&input);
-            assert_eq!(barrett32::scalar_from_bytes_mod_order_wide(&input), expected);
+            assert_eq!(
+                barrett32::scalar_from_bytes_mod_order_wide(&input),
+                expected
+            );
         }
     }
 
@@ -441,7 +453,10 @@ mod tests {
             let expected = dalek_wide(&wide);
 
             let reduced = barrett32::scalar_from_bytes_mod_order_wide(&wide);
-            assert_eq!(reduced, expected, "seed {seed:?} case {case} barrett32 {wide:?}");
+            assert_eq!(
+                reduced, expected,
+                "seed {seed:?} case {case} barrett32 {wide:?}"
+            );
 
             assert_eq!(
                 raw::scalar_from_canonical_bytes(reduced),

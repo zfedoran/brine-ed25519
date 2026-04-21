@@ -1,7 +1,7 @@
 //! Small curve shim for this crate.
 //!
-//! This crate is mainly meant to run inside Solana. On `target_arch = "bpf"` or 
-//! `target_os = "solana"`, the point operations used by signature verification 
+//! This crate is mainly meant to run inside Solana. On `target_arch = "bpf"` or
+//! `target_os = "solana"`, the point operations used by signature verification
 //! go straight to Solana's native curve syscalls.
 //!
 //! We still support host builds for tests and off-chain callers, so the same

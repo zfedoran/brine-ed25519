@@ -2,9 +2,7 @@
 #![allow(unexpected_cfgs)]
 
 use brine_ed25519::{hasher::Sha512, verify, Address};
-use pinocchio::{
-    default_allocator, nostd_panic_handler
-};
+use pinocchio::{default_allocator, nostd_panic_handler};
 
 const HELLO_WORLD_PUBKEY: Address = Address::new_from_array([
     73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233, 49, 154,
@@ -25,13 +23,13 @@ nostd_panic_handler!();
 pub unsafe extern "C" fn entrypoint() -> u64 {
     match verify::<Sha512>(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, &[b"hello world"]) {
         Ok(_) => 0,
-        Err(e) => e.into()
+        Err(e) => e.into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use mollusk_svm::{Mollusk, result::Check};
+    use mollusk_svm::{result::Check, Mollusk};
     use solana_instruction::Instruction;
 
     #[test]
@@ -41,7 +39,7 @@ mod tests {
         let result = mollusk.process_and_validate_instruction(
             &Instruction::new_with_bytes([0x02; 32].into(), &[], vec![]),
             &[],
-            &[Check::success()]
+            &[Check::success()],
         );
         println!("verify consumed {} CUs", result.compute_units_consumed);
     }
