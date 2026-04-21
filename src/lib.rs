@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(target_os = "solana", feature(asm_experimental_arch))]
 
 pub mod hasher;
 mod curve;
@@ -111,11 +112,9 @@ fn challenge<H: Hasher>(
     let mut hasher = H::new();
     hasher.update(sig_r);
     hasher.update(pubkey.as_ref());
-
     for message in messagev {
         hasher.update(message);
     }
-
     hasher.finalize()
 }
 
@@ -147,10 +146,14 @@ fn is_small_order(point: &[u8; 32]) -> bool {
 }
 
 #[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::hasher::{Hasher, Sha512};
     use curve25519_dalek::constants;
+    use std::{print, println};
 
     #[test]
     fn test_base_point() {
@@ -355,5 +358,59 @@ mod tests {
             challenge::<Sha512>(&sig_r, &pubkey, messagev),
             expected
         );
+    }
+
+    /// One-shot generator for the streaming-path test vector used by
+    /// `test-program-streaming`. Run with:
+    ///   cargo test --release gen_streaming_vector -- --ignored --nocapture
+    /// and paste the emitted constants into that crate.
+    ///
+    /// Picks a 50-byte message so that total input (32 R + 32 A + 50 M =
+    /// 114 bytes) exceeds the 111-byte fast-path threshold *and* forces
+    /// `finalize` into its spill branch (buf_len = 114 after absorption,
+    /// padding overflows into a second block).
+    #[test]
+    #[ignore]
+    fn gen_streaming_vector() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let seed: [u8; 32] = [0x11; 32];
+        let sk = SigningKey::from_bytes(&seed);
+        let vk = sk.verifying_key();
+
+        // 50 bytes, pure ASCII, chosen to make 32 + 32 + 50 = 114 bytes
+        // (buf_len after absorbing = 114, triggers finalize spill branch).
+        let message: &[u8] = b"The quick brown fox jumps over a lazy dog! 50bytes";
+        assert_eq!(message.len(), 50, "message length drifted; fix spill math");
+
+        let sig = sk.sign(message).to_bytes();
+
+        let pubkey = vk.to_bytes();
+        assert!(verify::<Sha512>(&Address::from(pubkey), &sig, &[message]).is_ok());
+
+        print!("const PUBKEY: [u8; 32] = [");
+        for (i, b) in pubkey.iter().enumerate() {
+            if i % 12 == 0 { print!("\n    "); }
+            print!("0x{b:02x}, ");
+        }
+        println!("\n];\n");
+
+        print!("const SIG: [u8; 64] = [");
+        for (i, b) in sig.iter().enumerate() {
+            if i % 12 == 0 { print!("\n    "); }
+            print!("0x{b:02x}, ");
+        }
+        println!("\n];\n");
+
+        print!("const MESSAGE: &[u8] = b\"");
+        for b in message {
+            match *b {
+                b'"' => print!("\\\""),
+                b'\\' => print!("\\\\"),
+                0x20..=0x7e => print!("{}", *b as char),
+                _ => print!("\\x{b:02x}"),
+            }
+        }
+        println!("\";");
     }
 }
