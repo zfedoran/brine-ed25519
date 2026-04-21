@@ -1,7 +1,11 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(unexpected_cfgs)]
 
-use brine_ed25519::{hasher::Sha512, verify, Address};
+#[cfg(feature = "fast-sha512")]
+use brine_ed25519::hasher::FastSha512 as TestSha512;
+#[cfg(not(feature = "fast-sha512"))]
+use brine_ed25519::hasher::Sha512 as TestSha512;
+use brine_ed25519::{verify, Address};
 use pinocchio::{default_allocator, nostd_panic_handler};
 
 const HELLO_WORLD_PUBKEY: Address = Address::new_from_array([
@@ -21,7 +25,7 @@ nostd_panic_handler!();
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn entrypoint() -> u64 {
-    match verify::<Sha512>(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, &[b"hello world"]) {
+    match verify::<TestSha512>(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, &[b"hello world"]) {
         Ok(_) => 0,
         Err(e) => e.into(),
     }

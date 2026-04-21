@@ -501,6 +501,7 @@ name = "brine-ed25519"
 version = "0.6.0"
 dependencies = [
  "curve25519-dalek",
+ "sha2 0.10.9",
  "solana-address 2.6.0",
  "solana-program-error",
 ]
