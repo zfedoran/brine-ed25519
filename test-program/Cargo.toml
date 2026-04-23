@@ -8,6 +8,10 @@ license = "MIT"
 name = "brine_ed25519_test"
 crate-type = ["cdylib", "lib"]
 
+[features]
+fast-sha512 = ["brine-ed25519/fast-sha512"]
+asm-sha512 = ["brine-ed25519/asm-sha512"]
+
 [dependencies]
 brine-ed25519 = { path = "../" }
 pinocchio = "0.11.1"

@@ -10,11 +10,15 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 ## ⚡ Performance
 
-| Operation         | CU (Approx.) |
-|-------------------|--------------|
-| `verify`          |      ~11,878 |
+| Operation               | Feature flag  | CU (Approx.) | Improvement |
+|-------------------------|---------------|--------------|-------------|
+| `verify::<Sha512>`      | default       |      ~12,549 | baseline    |
+| `verify::<FastSha512>`  | `fast-sha512` |      ~12,252 | -297 CU (~2.4%) |
+| `verify::<AsmSha512>`   | `asm-sha512`  |      ~11,578 | -971 CU (~7.7%) |
 
-This value is measured inside the Solana SVM via `test-program/` and depends on the message size.
+These values are measured inside the Solana SVM via `test-program/` and depend on the message size.
+`FastSha512` is available behind the `fast-sha512` feature flag.
+`AsmSha512` is available behind the `asm-sha512` feature flag (sBPF inline assembly; Solana target only).
 
 ---
 
@@ -48,6 +52,18 @@ verify_prehashed(&pubkey, &sig, &challenge)?;
 ```
 
 Custom hash implementations are supported via the `Hasher` trait.
+
+To opt into the faster SHA-512 path:
+
+```toml
+brine-ed25519 = { version = "0.6", features = ["fast-sha512"] }
+```
+
+```rust
+use brine_ed25519::hasher::FastSha512;
+
+verify::<FastSha512>(&pubkey, &sig, &[b"hello world"])?;
+```
 
 ---
 

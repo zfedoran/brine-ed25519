@@ -2,6 +2,16 @@ mod sha512;
 
 pub use sha512::Sha512;
 
+#[cfg(feature = "fast-sha512")]
+mod fast_sha512;
+#[cfg(feature = "fast-sha512")]
+pub use fast_sha512::FastSha512;
+
+#[cfg(feature = "asm-sha512")]
+mod asm_sha512;
+#[cfg(feature = "asm-sha512")]
+pub use asm_sha512::AsmSha512;
+
 pub trait Hasher: Sized {
     fn new() -> Self;
     fn update(&mut self, bytes: &[u8]);
