@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(all(feature = "asm-sha512", target_os = "solana"), feature(asm_experimental_arch))]
 
 mod curve;
 pub mod hasher;
@@ -108,11 +109,9 @@ fn challenge<H: Hasher>(sig_r: &[u8; 32], pubkey: &Address, messagev: &[&[u8]]) 
     let mut hasher = H::new();
     hasher.update(sig_r);
     hasher.update(pubkey.as_ref());
-
     for message in messagev {
         hasher.update(message);
     }
-
     hasher.finalize()
 }
 
@@ -174,6 +173,9 @@ const EIGHT_TORSION: [[u8; 32]; 8] = [
 fn is_small_order(point: &[u8; 32]) -> bool {
     EIGHT_TORSION.iter().any(|t| *t == *point)
 }
+
+#[cfg(test)]
+extern crate std;
 
 #[cfg(test)]
 mod tests {
@@ -383,4 +385,5 @@ mod tests {
 
         assert_eq!(challenge::<Sha512>(&sig_r, &pubkey, messagev), expected);
     }
+
 }
