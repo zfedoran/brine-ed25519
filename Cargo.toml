@@ -26,7 +26,6 @@ curve25519-dalek = { version = "4.1.3", default-features = false }
 
 [dev-dependencies]
 curve25519-dalek = { version = "4.1.3", default-features = false }
-ed25519-dalek = { version = "2.1", default-features = false }
 rand = { version = "0.8.5", default-features = false, features = ["std", "std_rng"] }
 
 [lints.rust.unexpected_cfgs]
