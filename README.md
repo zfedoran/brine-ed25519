@@ -14,9 +14,11 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 |-------------------------|---------------|--------------|-------------|
 | `verify::<Sha512>`      | default       |      ~12,549 | baseline    |
 | `verify::<FastSha512>`  | `fast-sha512` |      ~12,252 | -297 CU (~2.4%) |
+| `verify::<AsmSha512>`   | `asm-sha512`  |      ~10,897 | -1,652 CU (~13.2%) |
 
 These values are measured inside the Solana SVM via `test-program/` and depend on the message size.
 `FastSha512` is available behind the `fast-sha512` feature flag.
+`AsmSha512` is available behind the `asm-sha512` feature flag (sBPF inline assembly; Solana target only).
 
 ---
 
