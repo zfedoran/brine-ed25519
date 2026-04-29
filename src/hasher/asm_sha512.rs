@@ -24,21 +24,28 @@ fn state_to_be_bytes(state: &[u64; 8]) -> [u8; 64] {
 
 /// Σ1(e) = rotr14(e) ⊕ rotr18(e) ⊕ rotr41(e), computed as
 /// `rotr14(e ⊕ rotr4(e) ⊕ rotr27(e))` (rotate composition:
-/// `rotr_a(rotr_b(x)) = rotr_{a+b}(x)`). Source in r7 (e-carry from prior
-/// round's new_e), result in r1, tmp r2. 16 ops (one fewer than the
-/// 3-independent-rotates form, since the outer rotate reuses `u` already
-/// in r1 and skips the initial `mov r1, r7`).
+/// `rotr_a(rotr_b(x)) = rotr_{a+b}(x)`). Source in r7 (**destroyed** —
+/// the trailing `(e<<37)` term is computed in-place via `lsh64 r7, 37`),
+/// result in r1, tmp r2. 15 ops.
+///
+/// Callers must arrange for r7 to be dead after this macro: in normal
+/// rounds, r7 is reloaded with `d` later in the body; in folded rounds 1/2/3,
+/// r7 is reassigned via `lddw` for the next round's e-carry / d-load. Ch
+/// (which reads r7 = e) must therefore be evaluated *before* this macro,
+/// which is why the round body builds `K + h + W + Ch` in r4 first and
+/// runs Σ1 last as the final T1 fold.
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
-macro_rules! sig1_r7_to_r1 {
+macro_rules! sig1_r7_destructive_to_r1 {
     () => { concat!(
         // r1 = rotr4(r7)
         "mov64 r1, r7\n", "rsh64 r1, 4\n",
         "mov64 r2, r7\n", "lsh64 r2, 60\n", "xor64 r1, r2\n",
         // r1 = e ⊕ rotr4(e)
         "xor64 r1, r7\n",
-        // r1 ⊕= rotr27(e)   (composed with the xor above → e ⊕ rotr4 ⊕ rotr27)
+        // r1 ⊕= e>>27
         "mov64 r2, r7\n", "rsh64 r2, 27\n", "xor64 r1, r2\n",
-        "mov64 r2, r7\n", "lsh64 r2, 37\n", "xor64 r1, r2\n",
+        // r1 ⊕= e<<37 (destroys r7 by computing in place)
+        "lsh64 r7, 37\n", "xor64 r1, r7\n",
         // r1 = rotr14(u) = Σ1
         "mov64 r2, r1\n", "rsh64 r1, 14\n", "lsh64 r2, 50\n", "xor64 r1, r2\n",
     )};
@@ -69,49 +76,54 @@ macro_rules! sig0_r0_to_r5 {
 /// `shr7(x) = x >> 7` is also the high half of `rotr7(x) = (x>>7) | (x<<57)`,
 /// so we compute `x >> 7` once (into r3), use it to seed rotr7 construction,
 /// and reuse it for the final XOR — saving the redundant `mov+rsh` pair at
-/// the end. 12 ops. Uses r0 (src), r1 (dst), r2 (tmp), r3 (shr7 cache).
+/// the end. 11 ops. Uses r4 (src, **destroyed**), r1 (dst), r2 (tmp), r3
+/// (shr7 cache). The destructive `lsh64 r4, 57` saves the trailing
+/// `mov64 r2, r4` since every caller reloads r4 immediately after.
+///
+/// Source register is r4 (not r0) so that round_sched preserves the
+/// a-carry that lives in r0 across rounds.
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
-macro_rules! smallsig0_r0_to_r1 {
+macro_rules! smallsig0_r4_to_r1 {
     () => { concat!(
-        // r3 = shr7(x)
-        "mov64 r3, r0\n", "rsh64 r3, 7\n",
-        // r1 = rotr7(x): start from shr7, XOR in the high shift
-        "mov64 r1, r3\n",
-        "mov64 r2, r0\n", "lsh64 r2, 57\n", "xor64 r1, r2\n",
-        // r1 = x ^ rotr7(x)
-        "xor64 r1, r0\n",
-        // r1 = rotr1(r1) = rotr1(x) ^ rotr8(x)
-        "mov64 r2, r1\n", "lsh64 r2, 63\n", "rsh64 r1, 1\n", "xor64 r1, r2\n",
-        // r1 ^= shr7(x) (already in r3)
-        "xor64 r1, r3\n",
+        "mov64 r3, r4\n", "rsh64 r3, 7\n",            // r3 = x >> 7
+        "mov64 r1, r4\n",                              // r1 = x
+        "lsh64 r4, 57\n",                              // r4 = x << 57 (destroys x)
+        "xor64 r1, r4\n",                              // r1 = x ⊕ (x<<57)
+        "xor64 r1, r3\n",                              // r1 = u = x ⊕ rotr7(x)
+        "mov64 r2, r1\n", "lsh64 r2, 63\n",
+        "rsh64 r1, 1\n",  "xor64 r1, r2\n",            // r1 = rotr1(u)
+        "xor64 r1, r3\n",                              // r1 = σ0
     )};
 }
 
 /// σ1(x) = rotr19(x) ^ rotr61(x) ^ (x >> 6), computed as
 /// `rotr19(x ^ rotr42(x)) ^ shr6(x)` (same composition trick as σ0).
-/// Source in r0, result in r3, tmp r2. 13 ops.
+/// Source in r4 (**destroyed**), result in r3, tmp r2. 12 ops. The
+/// trailing `(x >> 6)` is computed in-place on r4 since every caller
+/// reloads r4 immediately after.
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
-macro_rules! smallsig1_r0_to_r3 {
+macro_rules! smallsig1_r4_to_r3 {
     () => { concat!(
-        // r3 = rotr42(x)
-        "mov64 r3, r0\n", "rsh64 r3, 42\n",
-        "mov64 r2, r0\n", "lsh64 r2, 22\n", "xor64 r3, r2\n",
-        // r3 = x ^ rotr42(x)
-        "xor64 r3, r0\n",
-        // r3 = rotr19(r3) = rotr19(x) ^ rotr61(x)
-        "mov64 r2, r3\n", "lsh64 r2, 45\n", "rsh64 r3, 19\n", "xor64 r3, r2\n",
-        // r3 ^= shr6(x)
-        "mov64 r2, r0\n", "rsh64 r2, 6\n",  "xor64 r3, r2\n",
+        "mov64 r3, r4\n", "rsh64 r3, 42\n",
+        "mov64 r2, r4\n", "lsh64 r2, 22\n",
+        "xor64 r3, r2\n",                              // r3 = rotr42(x)
+        "xor64 r3, r4\n",                              // r3 = u
+        "mov64 r2, r3\n", "lsh64 r2, 45\n",
+        "rsh64 r3, 19\n", "xor64 r3, r2\n",            // r3 = rotr19(u)
+        "rsh64 r4, 6\n",                               // r4 = x >> 6 (destroys x)
+        "xor64 r3, r4\n",                              // r3 = σ1
     )};
 }
 
-/// Ops: 3 loads (f, g, h) + Σ1 (16) + Ch (3) + 4 adds
-///      + 3 loads (a, b, c) + Σ0 (16) + Maj (4) + 1 add
-///      + 1 load (d) + 2 adds + 2 stores = 56.
+/// `a` is held in r0 across rounds (a-carry), `g` in r6 (= next round's
+/// h-carry), `e` in r7 (e-carry). Σ1 destroys r7, so Ch — which reads
+/// r7 = e — must finish before Σ1 runs; the partial T1 (K + h + W + Ch)
+/// accumulates in r4 and absorbs Σ1's result via one final `add r1, r4`.
 ///
 /// Maj uses the XOR identity `Maj(a,b,c) = a ⊕ ((a⊕b) ∧ (a⊕c))` (FIPS
 /// 180-4 §4.1.3's `(x∧y) ⊕ (x∧z) ⊕ (y∧z)` rewritten), matching the same
-/// `z ⊕ (x ∧ (y⊕z))` trick already used for Ch just above.
+/// `z ⊕ (x ∧ (y⊕z))` trick already used for Ch just above. It is folded
+/// destructively into r0 so `new_a` lands in the a-carry register.
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
 macro_rules! round_body_w_in_r5 {
     ($k:literal,
@@ -119,36 +131,127 @@ macro_rules! round_body_w_in_r5 {
      $e:literal, $f:literal, $g:literal, $h:literal,
      $na:literal, $ne:literal) => { concat!(
         // --- T1 = h + Σ1(e) + Ch(e,f,g) + K[i] + W[i] ---
-        // e is in r7 (carry); $e slot offset is unused in this expansion.
-        "ldxdw r6, [r9 + ", $k, "]\n",
-        sig1_r7_to_r1!(),
-        "ldxdw r3, [r8 + ", $f, "]\n",
-        "ldxdw r0, [r8 + ", $g, "]\n",
-        "xor64 r3, r0\n",
-        "and64 r3, r7\n",
-        "xor64 r3, r0\n",
-        "add64 r1, r3\n",
-        "ldxdw r3, [r8 + ", $h, "]\n",     // h → r3 (was r7, now holds e)
-        "add64 r1, r3\n",
-        "add64 r1, r6\n",
-        "add64 r1, r5\n",                   // W[i] already in r5
+        // $h slot offset is unused (h flows in via r6 carry).
+        "ldxdw r4, [r9 + ", $k, "]\n",     // r4 = K[i]
+        "add64 r4, r6\n",                   // r4 += h (consume h-carry; r6 free)
+        "add64 r4, r5\n",                   // r4 += W[i]
+        "ldxdw r3, [r8 + ", $f, "]\n",     // r3 = f
+        "ldxdw r6, [r8 + ", $g, "]\n",     // r6 = g (carries to next round as h)
+        "xor64 r3, r6\n",                   // r3 = f^g
+        "and64 r3, r7\n",                   // r3 = e&(f^g) — last read of r7 = e
+        "xor64 r3, r6\n",                   // r3 = Ch
+        "add64 r4, r3\n",                   // r4 = K + h + W + Ch
+        sig1_r7_destructive_to_r1!(),       // r1 = Σ1(e); destroys r7
+        "add64 r1, r4\n",                   // r1 = T1
 
-        // --- T2 = Σ0(a) + Maj(a,b,c); new_e; new_a (T1 consumed last) ---
-        "ldxdw r0, [r8 + ", $a, "]\n",
-        sig0_r0_to_r5!(),                   // r5 = Σ0(a) — W[i] no longer needed
+        // --- T2 = Σ0(a) + Maj(a,b,c); new_a built in r0 (a-carry) ---
+        sig0_r0_to_r5!(),                   // r5 = Σ0(r0=a); r0 preserved
         "ldxdw r3, [r8 + ", $b, "]\n",
         "ldxdw r4, [r8 + ", $c, "]\n",
-        // Maj(a,b,c) = a ^ ((a^b) & (a^c)).
         "xor64 r3, r0\n",                   // r3 = a ^ b
         "xor64 r4, r0\n",                   // r4 = a ^ c
         "and64 r3, r4\n",                   // r3 = (a^b) & (a^c)
-        "xor64 r3, r0\n",                   // r3 = Maj(a,b,c)
-        "add64 r5, r3\n",                   // r5 = T2 = Σ0(a) + Maj
-        "ldxdw r7, [r8 + ", $d, "]\n",     // r7 = d (e no longer needed)
-        "add64 r7, r1\n",                   // r7 = new_e = d + T1 → carries as next round's e
-        "add64 r5, r1\n",                   // r5 = new_a = T2 + T1 (clobbers r1)
-        "stxdw [r8 + ", $na, "], r5\n",
+        "xor64 r0, r3\n",                   // r0 = Maj (a destroyed)
+        "add64 r0, r5\n",                   // r0 = T2 = Σ0 + Maj
+        "ldxdw r7, [r8 + ", $d, "]\n",     // r7 = d
+        "add64 r7, r1\n",                   // r7 = new_e (carries to next round)
+        "add64 r0, r1\n",                   // r0 = new_a (carries to next round)
+        "stxdw [r8 + ", $na, "], r0\n",
         "stxdw [r8 + ", $ne, "], r7\n",
+    )};
+}
+
+/// Like `round_body_w_in_r5` but skips the final two `stxdw`s. Leaves
+/// `new_a` in r0 and `new_e` in r7 for the caller to consume directly —
+/// the compress functions bind r0/r7 as `lateout`/`out` operands and
+/// feed those values straight into the post-rounds state-add fold,
+/// avoiding a redundant store+reload pair on the last round.
+#[cfg(any(target_arch = "bpf", target_os = "solana"))]
+macro_rules! round_body_w_in_r5_keep_in_regs {
+    ($k:literal,
+     $a:literal, $b:literal, $c:literal, $d:literal,
+     $e:literal, $f:literal, $g:literal, $h:literal) => { concat!(
+        // --- T1 = h + Σ1(e) + Ch(e,f,g) + K[i] + W[i] ---
+        // Same shape as `round_body_w_in_r5`; see there for the rationale.
+        "ldxdw r4, [r9 + ", $k, "]\n",
+        "add64 r4, r6\n",
+        "add64 r4, r5\n",
+        "ldxdw r3, [r8 + ", $f, "]\n",
+        "ldxdw r6, [r8 + ", $g, "]\n",     // r6 = g (carries to next round)
+        "xor64 r3, r6\n",
+        "and64 r3, r7\n",                   // last read of r7 = e
+        "xor64 r3, r6\n",
+        "add64 r4, r3\n",
+        sig1_r7_destructive_to_r1!(),       // r1 = Σ1(e); destroys r7
+        "add64 r1, r4\n",
+
+        // --- T2 = Σ0(a) + Maj(a,b,c); new_e in r7; new_a in r0 (kept) ---
+        sig0_r0_to_r5!(),                   // r5 = Σ0(r0=a)
+        "ldxdw r3, [r8 + ", $b, "]\n",
+        "ldxdw r4, [r8 + ", $c, "]\n",
+        "xor64 r3, r0\n",
+        "xor64 r4, r0\n",
+        "and64 r3, r4\n",
+        "xor64 r0, r3\n",                   // r0 = Maj
+        "add64 r0, r5\n",                   // r0 = T2
+        "ldxdw r7, [r8 + ", $d, "]\n",
+        "add64 r7, r1\n",                   // r7 = new_e (kept)
+        "add64 r0, r1\n",                   // r0 = new_a (kept)
+        // No stxdws — caller reads r0/r7 via Rust `out` operands.
+    )};
+}
+
+/// Like `round_sched` but skips the final W-schedule store. Used for the
+/// last round whose W result is still consumed by a later round body —
+/// concretely round 78. Liveness analysis: W[j] is read at rounds j+2
+/// (σ1 input), j+7 (middle term), j+15 (σ0 input), j+16 (slot read). For
+/// j=78 every one of those rounds is ≥ 80, so the schedule store is
+/// dead. Saves 1 stxdw.
+#[cfg(any(target_arch = "bpf", target_os = "solana"))]
+macro_rules! round_sched_no_w_store {
+    ($k:literal, $wi:literal, $wip1:literal, $wip9:literal, $wip14:literal,
+     $a:literal, $b:literal, $c:literal, $d:literal,
+     $e:literal, $f:literal, $g:literal, $h:literal,
+     $na:literal, $ne:literal) => { concat!(
+        // σ inputs go through r4 (not r0) so r0 = a-carry survives
+        // the schedule update.
+        "ldxdw r4, [r8 + ", $wip1, "]\n",
+        smallsig0_r4_to_r1!(),
+        "ldxdw r4, [r8 + ", $wip14, "]\n",
+        smallsig1_r4_to_r3!(),
+        "ldxdw r5, [r8 + ", $wi, "]\n",
+        "ldxdw r4, [r8 + ", $wip9, "]\n",
+        "add64 r5, r1\n",
+        "add64 r5, r3\n",
+        "add64 r5, r4\n",
+        // No `stxdw [r8 + wi], r5` — W[78] has no future reader.
+        round_body_w_in_r5!($k, $a, $b, $c, $d, $e, $f, $g, $h, $na, $ne),
+    )};
+}
+
+/// Like `round_sched` but skips both the W-schedule store *and* the
+/// final new_a/new_e stores. Used for round 79: W[79] has no later
+/// reader (rounds j+2, j+7, j+15, j+16 are all ≥ 81), and r0/r7 carry
+/// new_a_79 / new_e_79 out of the asm via Rust `lateout`/`out` operands.
+/// Saves 1 stxdw vs `round_sched_no_w_store` + 2 stxdws + 2 ldxdws (the
+/// avoided post-asm reloads for state[0]/state[4]).
+#[cfg(any(target_arch = "bpf", target_os = "solana"))]
+macro_rules! round_sched_keep_in_regs {
+    ($k:literal, $wi:literal, $wip1:literal, $wip9:literal, $wip14:literal,
+     $a:literal, $b:literal, $c:literal, $d:literal,
+     $e:literal, $f:literal, $g:literal, $h:literal) => { concat!(
+        // σ inputs in r4 (preserves r0 = a-carry).
+        "ldxdw r4, [r8 + ", $wip1, "]\n",
+        smallsig0_r4_to_r1!(),
+        "ldxdw r4, [r8 + ", $wip14, "]\n",
+        smallsig1_r4_to_r3!(),
+        "ldxdw r5, [r8 + ", $wi, "]\n",
+        "ldxdw r4, [r8 + ", $wip9, "]\n",
+        "add64 r5, r1\n",
+        "add64 r5, r3\n",
+        "add64 r5, r4\n",
+        // No `stxdw [r8 + wi], r5` — W[79] has no future reader.
+        round_body_w_in_r5_keep_in_regs!($k, $a, $b, $c, $d, $e, $f, $g, $h),
     )};
 }
 
@@ -165,61 +268,20 @@ macro_rules! round_nosched {
     )};
 }
 
-/// Like `round_nosched` but expects `h + K[i]` as a pre-summed 64-bit
-/// constant materialised with `lddw`, saving one ldxdw (K[i]) + one ldxdw
-/// (h) + one add, replaced by one lddw + one add. `h` isn't passed since
-/// it's baked into the HK constant. 2 ops saved per invocation.
-///
-/// Usable whenever `h_i` is a compile-time constant — on the round-0-folded
-/// fast path that's rounds 1, 2, 3 (h_i traces back to g_0, f_0, e_0, all
-/// H0 entries). `$hk` must be a template fragment like `"{HK_2}"` matched
-/// by a `HK_2 = const ...` asm operand.
-#[cfg(any(target_arch = "bpf", target_os = "solana"))]
-macro_rules! round_nosched_hk {
-    ($hk:literal, $wi:literal,
-     $a:literal, $b:literal, $c:literal, $d:literal,
-     $e:literal, $f:literal, $g:literal,
-     $na:literal, $ne:literal) => { concat!(
-        "ldxdw r5, [r8 + ", $wi, "]\n",
-        sig1_r7_to_r1!(),
-        "ldxdw r3, [r8 + ", $f, "]\n",
-        "ldxdw r0, [r8 + ", $g, "]\n",
-        "xor64 r3, r0\n",
-        "and64 r3, r7\n",
-        "xor64 r3, r0\n",
-        "add64 r1, r3\n",
-        "lddw r6, ", $hk, "\n",
-        "add64 r1, r6\n",
-        "add64 r1, r5\n",
-        "ldxdw r0, [r8 + ", $a, "]\n",
-        sig0_r0_to_r5!(),
-        "ldxdw r3, [r8 + ", $b, "]\n",
-        "ldxdw r4, [r8 + ", $c, "]\n",
-        "xor64 r3, r0\n",
-        "xor64 r4, r0\n",
-        "and64 r3, r4\n",
-        "xor64 r3, r0\n",
-        "add64 r5, r3\n",
-        "ldxdw r7, [r8 + ", $d, "]\n",
-        "add64 r7, r1\n",
-        "add64 r5, r1\n",
-        "stxdw [r8 + ", $na, "], r5\n",
-        "stxdw [r8 + ", $ne, "], r7\n",
-    )};
-}
-
 /// Schedule update (W[i] += σ0(W[i+1]) + W[i+9] + σ1(W[i+14])) leaving the
-/// updated `W[i]` in `r5`, then the round body. Schedule: 36 ops.
+/// updated `W[i]` in `r5`, then the round body. Schedule: 33 ops
+/// (12 σ0 + 13 σ1 + 4 loads + 1 store + 3 adds).
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
 macro_rules! round_sched {
     ($k:literal, $wi:literal, $wip1:literal, $wip9:literal, $wip14:literal,
      $a:literal, $b:literal, $c:literal, $d:literal,
      $e:literal, $f:literal, $g:literal, $h:literal,
      $na:literal, $ne:literal) => { concat!(
-        "ldxdw r0, [r8 + ", $wip1, "]\n",
-        smallsig0_r0_to_r1!(),
-        "ldxdw r0, [r8 + ", $wip14, "]\n",
-        smallsig1_r0_to_r3!(),
+        // σ inputs in r4 (preserves r0 = a-carry).
+        "ldxdw r4, [r8 + ", $wip1, "]\n",
+        smallsig0_r4_to_r1!(),
+        "ldxdw r4, [r8 + ", $wip14, "]\n",
+        smallsig1_r4_to_r3!(),
         "ldxdw r5, [r8 + ", $wi, "]\n",
         "ldxdw r4, [r8 + ", $wip9, "]\n",
         "add64 r5, r1\n",
@@ -230,16 +292,14 @@ macro_rules! round_sched {
     )};
 }
 
-/// Rounds 2..79 — used by `compress_initial_h0_asm` after its folded
-/// round 1. Rounds 2 and 3 use `round_nosched_hk` because their `h_i`
-/// values (H0[5] and H0[4] respectively) are still compile-time constants
-/// on the round-0-folded path; from round 4 onward h is W-dependent so we
-/// revert to the generic `round_nosched`.
+/// Rounds 4..79 — used by `compress_initial_h0_asm` after its folded
+/// rounds 0–3. Rounds 2 and 3 are inlined separately at the call site
+/// because their state operands include several H0 constants (slot
+/// reads we replace with `lddw` immediates so the Rust prologue can
+/// skip the corresponding `locals[i] = H0[i]` writes).
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
-macro_rules! rounds_2_through_79 {
+macro_rules! rounds_4_through_79 {
     () => { concat!(
-        round_nosched_hk!("{HK_2}", "80",  "48", "56", "0",  "8",  "16", "24", "32", "40", "8"),
-        round_nosched_hk!("{HK_3}", "88",  "40", "48", "56", "0",  "8",  "16", "24", "32", "0"),
         round_nosched!("32",  "96",  "32", "40", "48", "56", "0",  "8",  "16", "24", "24", "56"),
         round_nosched!("40",  "104", "24", "32", "40", "48", "56", "0",  "8",  "16", "16", "48"),
         round_nosched!("48",  "112", "16", "24", "32", "40", "48", "56", "0",  "8",  "8",  "40"),
@@ -315,8 +375,14 @@ macro_rules! rounds_2_through_79 {
         round_sched!("600", "152", "160", "96",  "136", "40", "48", "56", "0",  "8",  "16", "24", "32", "32", "0"),
         round_sched!("608", "160", "168", "104", "144", "32", "40", "48", "56", "0",  "8",  "16", "24", "24", "56"),
         round_sched!("616", "168", "176", "112", "152", "24", "32", "40", "48", "56", "0",  "8",  "16", "16", "48"),
-        round_sched!("624", "176", "184", "120", "160", "16", "24", "32", "40", "48", "56", "0",  "8",  "8",  "40"),
-        round_sched!("632", "184", "64",  "128", "168", "8",  "16", "24", "32", "40", "48", "56", "0",  "0",  "32"),
+        // Round 78: skip the W store (W[78] has no future reader — all of
+        // {j+2, j+7, j+15, j+16} = {80, 85, 93, 94} are out of range).
+        round_sched_no_w_store!("624", "176", "184", "120", "160", "16", "24", "32", "40", "48", "56", "0",  "8",  "8",  "40"),
+        // Round 79: final round. Skip the new_a/new_e stxdws — the caller
+        // captures r5 (= new_a_79) and r7 (= new_e_79) via Rust `out`
+        // operands and folds them directly into state[0]/state[4]. Saves
+        // 2 stxdws (asm) + 2 ldxdws (Rust fold).
+        round_sched_keep_in_regs!("632", "184", "64",  "128", "168", "8",  "16", "24", "32", "40", "48", "56", "0"),
     )};
 }
 
@@ -411,8 +477,14 @@ macro_rules! rounds_1_through_79 {
         round_sched!("600", "152", "160", "96",  "136", "40", "48", "56", "0",  "8",  "16", "24", "32", "32", "0"),
         round_sched!("608", "160", "168", "104", "144", "32", "40", "48", "56", "0",  "8",  "16", "24", "24", "56"),
         round_sched!("616", "168", "176", "112", "152", "24", "32", "40", "48", "56", "0",  "8",  "16", "16", "48"),
-        round_sched!("624", "176", "184", "120", "160", "16", "24", "32", "40", "48", "56", "0",  "8",  "8",  "40"),
-        round_sched!("632", "184", "64",  "128", "168", "8",  "16", "24", "32", "40", "48", "56", "0",  "0",  "32"),
+        // Round 78: skip the W store (W[78] has no future reader — all of
+        // {j+2, j+7, j+15, j+16} = {80, 85, 93, 94} are out of range).
+        round_sched_no_w_store!("624", "176", "184", "120", "160", "16", "24", "32", "40", "48", "56", "0",  "8",  "8",  "40"),
+        // Round 79: final round. Skip the new_a/new_e stxdws — the caller
+        // captures r5 (= new_a_79) and r7 (= new_e_79) via Rust `out`
+        // operands and folds them directly into state[0]/state[4]. Saves
+        // 2 stxdws (asm) + 2 ldxdws (Rust fold).
+        round_sched_keep_in_regs!("632", "184", "64",  "128", "168", "8",  "16", "24", "32", "40", "48", "56", "0"),
     )};
 }
 
@@ -456,28 +528,37 @@ fn compress_asm(state: &mut [u64; 8], block: &[u8; 128]) {
 
         let mut locals = locals.assume_init();
 
+        // Round 79's new_a/new_e never get stored to locals (the macro
+        // skips those stxdws). They flow out of the asm in r0/r7 and feed
+        // straight into the state[0]/state[4] adds below.
+        let new_a_79: u64;
+        let new_e_79: u64;
+
         core::arch::asm!(
             concat!(
-                // Pre-load e_0 into r7 so round 0 can pick it up via the
-                // same e-carry path as rounds 1..79 (sig1 sources from r7).
-                // Costs 1 op; saves 1 ldxdw per round across 80 rounds.
+                // Seed the carry registers from `state[*]` before round 0:
+                //   r7 = e_0 (e-carry, slot 4)
+                //   r0 = a_0 (a-carry, slot 0)
+                //   r6 = h_0 (g-carry seed, slot 7)
                 "ldxdw r7, [r8 + 32]\n",
+                "ldxdw r0, [r8 + 0]\n",
+                "ldxdw r6, [r8 + 56]\n",
                 // Round 0: W[0] already loaded, no schedule update.
                 round_nosched!("0", "64", "0", "8", "16", "24", "32", "40", "48", "56", "56", "24"),
                 rounds_1_through_79!(),
             ),
             in("r8") locals.as_mut_ptr(),
             in("r9") K.as_ptr(),
-            out("r0") _, out("r1") _, out("r2") _, out("r3") _,
-            out("r4") _, out("r5") _, out("r6") _, out("r7") _,
+            lateout("r0") new_a_79, out("r1") _, out("r2") _, out("r3") _,
+            out("r4") _, out("r5") _, out("r6") _, lateout("r7") new_e_79,
             options(nostack),
         );
 
-        state[0] = state[0].wrapping_add(locals[0]);
+        state[0] = state[0].wrapping_add(new_a_79);
         state[1] = state[1].wrapping_add(locals[1]);
         state[2] = state[2].wrapping_add(locals[2]);
         state[3] = state[3].wrapping_add(locals[3]);
-        state[4] = state[4].wrapping_add(locals[4]);
+        state[4] = state[4].wrapping_add(new_e_79);
         state[5] = state[5].wrapping_add(locals[5]);
         state[6] = state[6].wrapping_add(locals[6]);
         state[7] = state[7].wrapping_add(locals[7]);
@@ -494,7 +575,10 @@ fn compress_asm(state: &mut [u64; 8], block: &[u8; 128]) {
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
 #[inline(always)]
 fn compress_initial_h0_asm(block: &[u8; 128]) -> [u8; 64] {
-    let mut locals: core::mem::MaybeUninit<[u64; 24]> = core::mem::MaybeUninit::uninit();
+    // 25 slots: 0..8 working state, 8..24 W schedule, 24 = out_ptr spill
+    // (saved at asm entry, reloaded before BE-fold) so r6 can carry `g`
+    // across rounds 4..79.
+    let mut locals: core::mem::MaybeUninit<[u64; 25]> = core::mem::MaybeUninit::uninit();
     let locals_ptr = locals.as_mut_ptr() as *mut u64;
     let block_ptr = block.as_ptr() as *const u64;
 
@@ -509,27 +593,46 @@ fn compress_initial_h0_asm(block: &[u8; 128]) -> [u8; 64] {
     //   register clobber list.
     unsafe {
         let w0 = u64::from_be(core::ptr::read_unaligned(block_ptr));
+        let w1 = u64::from_be(core::ptr::read_unaligned(block_ptr.add(1)));
         let new_a_0 = NEW_A_0_BASE.wrapping_add(w0);
         let new_e_0 = NEW_E_0_BASE.wrapping_add(w0);
 
-        locals_ptr.add(0).write(H0[0]);
-        locals_ptr.add(1).write(H0[1]);
-        locals_ptr.add(2).write(H0[2]);
+        // Slots 0, 1, 2, 4, 5, 6 of `locals` are intentionally left
+        // uninitialised — every reader of those slots before they get
+        // overwritten by a later round's stxdw uses an `lddw` const
+        // (H0_*, FG_XOR_1, G_1, HK_1, HK_2, HK_3, BC_OR_1, BC_AND_1)
+        // instead of a slot load. Liveness summary:
+        //   slot 0 (H[0]): read by rounds 2 ($c) and 3 ($d) → both via
+        //                  `lddw r4/r7, {H0_0}` in the inlined asm.
+        //                  Round 7 overwrites with new_a_7 (Maj a-load).
+        //   slot 1 (H[1]): read by round 2 ($d) → `lddw r7, {H0_1}`.
+        //                  Round 2 overwrites with new_e_2.
+        //   slot 2 (H[2]): read by round 1 ($d) → `lddw r7, {H0_2}`.
+        //                  Round 1 overwrites with new_e_1.
+        //   slot 4 (H[4]): read by round 2 ($g) → `lddw r0, {H0_4}`.
+        //                  Round 3 overwrites with new_a_3.
+        //   slot 5 (H[5]): never read; round 1 uses G_1/FG_XOR_1 consts.
+        //                  Round 2 overwrites with new_a_2.
+        //   slot 6 (H[6]): never read; round 1 uses HK_1 const.
+        //                  Round 1 overwrites with new_a_1.
+        //   slot 7 (new_a_0): written by round 1's `stxdw [r8 + 56], r0`
+        //                  using the inout(r0) we pass below.
         locals_ptr.add(3).write(new_e_0);
-        locals_ptr.add(4).write(H0[4]);
-        locals_ptr.add(5).write(H0[5]);
-        locals_ptr.add(6).write(H0[6]);
-        locals_ptr.add(7).write(new_a_0);
 
         locals_ptr.add(8).write(w0);
-        let mut i = 1;
+        locals_ptr.add(9).write(w1);
+        let mut i = 2;
         while i < 16 {
             let word = u64::from_be(core::ptr::read_unaligned(block_ptr.add(i)));
             locals_ptr.add(8 + i).write(word);
             i += 1;
         }
 
-        let mut locals = locals.assume_init();
+        // r6 carries `g` across rounds 4..79; out_ptr is passed via r6
+        // and spilled to locals[24] at asm entry, then reloaded into r9
+        // for the BE-fold so the asm can write the digest directly.
+        let mut out = core::mem::MaybeUninit::<[u8; 64]>::uninit();
+        let out_ptr = out.as_mut_ptr() as *mut u64;
 
         core::arch::asm!(
             // Round 0 is pre-folded in Rust; r7 starts holding new_e_0 via
@@ -548,31 +651,155 @@ fn compress_initial_h0_asm(block: &[u8; 128]) -> [u8; 64] {
             // compile-time constants (equivalent to the general XOR form
             // but saves 2 ops since we don't need to build `a⊕b` and `a⊕c`).
             //
-            // --- Folded round 1 (k=8, W[1] at slot 72) ---
-            "ldxdw r5, [r8 + 72]\n",
-            sig1_r7_to_r1!(),
+            // Spill out_ptr (incoming via in("r6")) to locals[24]. r6 is
+            // reused as the g-carry register across rounds 4..79; we
+            // reload out_ptr from this slot just before the BE-fold below.
+            "stxdw [r8 + 192], r6\n",
+
+            // --- Folded round 1 (k=8, W[1] passed in r5) ---
+            // r0 enters carrying new_a_0 (from `inout("r0")`). r5 enters
+            // carrying W[1] (from `inout("r5")`). Save new_a_0 to slot 7
+            // for rounds 2-4's $b/$c/$d reads.
+            "stxdw [r8 + 56], r0\n",
             "lddw r3, {FG_XOR_1}\n",
-            "and64 r3, r7\n",
-            "lddw r0, {G_1}\n",
-            "xor64 r3, r0\n",
-            "add64 r1, r3\n",
-            "lddw r6, {HK_1}\n",
-            "add64 r1, r6\n",
-            "add64 r1, r5\n",
-            "ldxdw r0, [r8 + 56]\n",
-            sig0_r0_to_r5!(),
+            "and64 r3, r7\n",                 // last read of r7 = e_1
+            "lddw r2, {G_1}\n",
+            "xor64 r3, r2\n",                  // r3 = Ch
+            "lddw r4, {HK_1}\n",
+            "add64 r4, r5\n",                  // r4 = HK_1 + W[1]
+            "add64 r4, r3\n",                  // r4 = HK_1 + W[1] + Ch
+            sig1_r7_destructive_to_r1!(),      // r1 = Σ1(e_1); destroys r7
+            "add64 r1, r4\n",                  // r1 = T1
+            sig0_r0_to_r5!(),                  // r5 = Σ0(r0=a_1=new_a_0)
+            // Maj built into r0 destructively so new_a_1 lands in r0.
             "lddw r3, {BC_OR_1}\n",
-            "and64 r3, r0\n",
-            "lddw r2, {BC_AND_1}\n",
-            "or64 r3, r2\n",
-            "add64 r5, r3\n",
-            "ldxdw r7, [r8 + 16]\n",
+            "and64 r0, r3\n",                // r0 = a & (b|c) — destroys a
+            "lddw r3, {BC_AND_1}\n",
+            "or64 r0, r3\n",                  // r0 = Maj
+            "add64 r0, r5\n",                 // r0 = T2 = Σ0 + Maj
+            // r7 = H[2] (= d_1) via lddw const. Previous slot 2 ldxdw
+            // is dead — Rust prologue skips writing slot 2.
+            "lddw r7, {H0_2}\n",
             "add64 r7, r1\n",
-            "add64 r5, r1\n",
-            "stxdw [r8 + 48], r5\n",
+            "add64 r0, r1\n",                 // r0 = new_a_1 (a-carry)
+            "stxdw [r8 + 48], r0\n",
             "stxdw [r8 + 16], r7\n",
-            // --- Rounds 2..79 (normal body) ---
-            rounds_2_through_79!(),
+
+            // --- Folded round 2 (k=16, W[2] at slot 80, h via HK_2). ---
+            // r0 enters with new_a_1 (a-carry from round 1).
+            // $c = H[0], $d = H[1], $g = H[4] all come via lddw consts —
+            // their slot writes are skipped in the Rust prologue.
+            // g is held in r2 (not r4) so r4 can carry the partial T1.
+            "ldxdw r5, [r8 + 80]\n",        // W[2]
+            "lddw r4, {HK_2}\n",
+            "add64 r4, r5\n",                // r4 = HK_2 + W[2]
+            "ldxdw r3, [r8 + 24]\n",        // f = new_e_0 (slot 3)
+            "lddw r2, {H0_4}\n",            // g = H[4]
+            "xor64 r3, r2\n",
+            "and64 r3, r7\n",                // last read of r7 = e_2
+            "xor64 r3, r2\n",                // r3 = Ch
+            "add64 r4, r3\n",                // r4 = HK + W + Ch
+            sig1_r7_destructive_to_r1!(),    // r1 = Σ1(e_2); destroys r7
+            "add64 r1, r4\n",                // r1 = T1
+            sig0_r0_to_r5!(),               // r5 = Σ0(r0=a-carry); r0 preserved
+            "ldxdw r3, [r8 + 56]\n",        // b = new_a_0 (slot 7)
+            "lddw r4, {H0_0}\n",            // c = H[0]
+            "xor64 r3, r0\n",
+            "xor64 r4, r0\n",
+            "and64 r3, r4\n",
+            "xor64 r0, r3\n",                // r0 = Maj (a destroyed)
+            "add64 r0, r5\n",                // r0 = T2
+            "lddw r7, {H0_1}\n",            // d = H[1]
+            "add64 r7, r1\n",
+            "add64 r0, r1\n",                // r0 = new_a_2 (a-carry)
+            "stxdw [r8 + 40], r0\n",        // new_a_2 → slot 5
+            "stxdw [r8 + 8], r7\n",         // new_e_2 → slot 1
+
+            // --- Folded round 3 (k=24, W[3] at slot 88, h via HK_3). ---
+            // r0 enters with new_a_2 (a-carry from round 2). Same shape
+            // as round 2. The `ldxdw r6, [r8+24]` here primes the g-carry
+            // for round 4 (g_3 = new_e_0); out_ptr was spilled at asm
+            // entry so r6 is free to take this role.
+            // $d = H[0] via lddw — last initial H[0] read before round 7
+            // overwrites slot 0.
+            "ldxdw r5, [r8 + 88]\n",        // W[3]
+            "lddw r4, {HK_3}\n",
+            "add64 r4, r5\n",                // r4 = HK_3 + W[3]
+            "ldxdw r3, [r8 + 16]\n",        // f = new_e_1 (slot 2)
+            "ldxdw r6, [r8 + 24]\n",        // g_3 = new_e_0 → r6 (g-carry seed)
+            "xor64 r3, r6\n",
+            "and64 r3, r7\n",                // last read of r7 = e_3
+            "xor64 r3, r6\n",                // r3 = Ch
+            "add64 r4, r3\n",                // r4 = HK + W + Ch
+            sig1_r7_destructive_to_r1!(),    // r1 = Σ1(e_3); destroys r7
+            "add64 r1, r4\n",                // r1 = T1
+            sig0_r0_to_r5!(),               // r5 = Σ0(r0=a-carry); r0 preserved
+            "ldxdw r3, [r8 + 48]\n",        // b = new_a_1 (slot 6)
+            "ldxdw r4, [r8 + 56]\n",        // c = new_a_0 (slot 7)
+            "xor64 r3, r0\n",
+            "xor64 r4, r0\n",
+            "and64 r3, r4\n",
+            "xor64 r0, r3\n",                // r0 = Maj
+            "add64 r0, r5\n",                // r0 = T2
+            "lddw r7, {H0_0}\n",            // d = H[0]
+            "add64 r7, r1\n",
+            "add64 r0, r1\n",                // r0 = new_a_3 (a-carry)
+            "stxdw [r8 + 32], r0\n",        // new_a_3 → slot 4
+            "stxdw [r8 + 0], r7\n",         // new_e_3 → slot 0
+
+            // --- Rounds 4..79 (normal body, r0 carries `a`, r6 carries `g`) ---
+            rounds_4_through_79!(),
+
+            // Reload out_ptr into r9 (K table no longer needed; was r9).
+            // r6 stays = g_79 = new_e_76 = locals[7]'s value, which is
+            // exactly what slot-7's fold needs — saves the slot-7 ldxdw.
+            "ldxdw r9, [r8 + 192]\n",
+
+            // --- Post-rounds BE-fused fold (in-asm) ---
+            // r0 = new_a_79, r7 = new_e_79 (a/e-carries from round 79).
+            // r6 = locals[7] (g_79 = h_80, never overwritten by round 79).
+            // r9 = out_ptr (just reloaded from spill).
+            // Slot 0: out[0..8] = bswap(H0[0] + new_a_79)
+            "lddw r5, {H0_0}\n",
+            "add64 r0, r5\n",
+            "be64 r0\n",
+            "stxdw [r9 + 0], r0\n",
+            // Slot 4: out[32..40] = bswap(H0[4] + new_e_79)
+            "lddw r5, {H0_4}\n",
+            "add64 r7, r5\n",
+            "be64 r7\n",
+            "stxdw [r9 + 32], r7\n",
+            // Slot 7 (use r6 = locals[7] directly — no ldxdw needed)
+            "lddw r0, {H0_7}\n",
+            "add64 r6, r0\n",
+            "be64 r6\n",
+            "stxdw [r9 + 56], r6\n",
+            // Slots 1, 2, 3, 5, 6: load locals[i], add H0[i], bswap, store.
+            "ldxdw r1, [r8 + 8]\n",
+            "lddw r0, {H0_1}\n",
+            "add64 r1, r0\n",
+            "be64 r1\n",
+            "stxdw [r9 + 8], r1\n",
+            "ldxdw r1, [r8 + 16]\n",
+            "lddw r0, {H0_2}\n",
+            "add64 r1, r0\n",
+            "be64 r1\n",
+            "stxdw [r9 + 16], r1\n",
+            "ldxdw r1, [r8 + 24]\n",
+            "lddw r0, {H0_3}\n",
+            "add64 r1, r0\n",
+            "be64 r1\n",
+            "stxdw [r9 + 24], r1\n",
+            "ldxdw r1, [r8 + 40]\n",
+            "lddw r0, {H0_5}\n",
+            "add64 r1, r0\n",
+            "be64 r1\n",
+            "stxdw [r9 + 40], r1\n",
+            "ldxdw r1, [r8 + 48]\n",
+            "lddw r0, {H0_6}\n",
+            "add64 r1, r0\n",
+            "be64 r1\n",
+            "stxdw [r9 + 48], r1\n",
             FG_XOR_1 = const (H0[4] ^ H0[5]),
             G_1 = const H0[5],
             HK_1 = const H0[6].wrapping_add(K[1]),
@@ -580,28 +807,25 @@ fn compress_initial_h0_asm(block: &[u8; 128]) -> [u8; 64] {
             BC_AND_1 = const (H0[0] & H0[1]),
             HK_2 = const H0[5].wrapping_add(K[2]),
             HK_3 = const H0[4].wrapping_add(K[3]),
-            in("r8") locals.as_mut_ptr(),
+            H0_0 = const H0[0],
+            H0_1 = const H0[1],
+            H0_2 = const H0[2],
+            H0_3 = const H0[3],
+            H0_4 = const H0[4],
+            H0_5 = const H0[5],
+            H0_6 = const H0[6],
+            H0_7 = const H0[7],
+            in("r8") locals_ptr,
             in("r9") K.as_ptr(),
+            in("r6") out_ptr,
             inout("r7") new_e_0 => _,
-            out("r0") _, out("r1") _, out("r2") _, out("r3") _,
-            out("r4") _, out("r5") _, out("r6") _,
+            inout("r0") new_a_0 => _,
+            inout("r5") w1 => _,
+            out("r1") _, out("r2") _, out("r3") _,
+            out("r4") _,
             options(nostack),
         );
 
-        let mut out = core::mem::MaybeUninit::<[u8; 64]>::uninit();
-        let out_ptr = out.as_mut_ptr() as *mut u64;
-        let mut i = 0;
-        while i < 8 {
-            // SAFETY: `out_ptr.add(i)` is in-bounds for [u8; 64];
-            // write_unaligned accepts any alignment. Fused fold of
-            // `H0[i] + locals[i]` and big-endian byte emission into one
-            // pass — no intermediate `[u64; 8]` materialised.
-            core::ptr::write_unaligned(
-                out_ptr.add(i),
-                H0[i].wrapping_add(locals[i]).to_be(),
-            );
-            i += 1;
-        }
         out.assume_init()
     }
 }
