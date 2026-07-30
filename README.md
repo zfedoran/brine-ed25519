@@ -58,6 +58,9 @@ the whole program out of the syscall):
 brine-ed25519 = { version = "0.9", features = ["fast-sha512"] }
 ```
 
+Since 0.9.1, syscall linkage follows the toolchain: dynamic on the default
+arch, static syscall numbers under `cargo build-sbf --arch v3` (SBPF v3).
+
 ---
 
 ## Which version should I use?

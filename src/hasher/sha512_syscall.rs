@@ -9,7 +9,8 @@
 //! Requires the `enable_sha512_syscall` feature gate
 //! (`s512oDwgx8hjMnaQjXfqqrZroVj4HvC6TkN3iSSWXCh`) to be active on the
 //! target cluster. Programs built with this hasher fail to load on clusters
-//! where the gate is inactive (unresolved `sol_sha512` symbol). Enable the
+//! where the gate is inactive (the `sol_sha512` syscall is not registered,
+//! whether linked dynamically or via a static syscall number). Enable the
 //! `fast-sha512` feature to fall back to in-program hashing on such
 //! clusters.
 //!
@@ -17,6 +18,7 @@
 //! `sha2`-backed [`Sha512`](crate::hasher::Sha512) instead.
 
 use crate::hasher::Hasher;
+use solana_define_syscall::definitions::sol_sha512;
 
 /// Maximum number of `update` calls a single hash may record. The verify
 /// path uses `2 + messages.len()` slices.
@@ -30,10 +32,6 @@ const MAX_SLICES: usize = 16;
 struct Slice {
     addr: u64,
     len: u64,
-}
-
-extern "C" {
-    fn sol_sha512(vals: *const u8, val_len: u64, hash_result: *mut u8) -> u64;
 }
 
 pub(crate) struct Sha512Syscall {

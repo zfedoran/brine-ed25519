@@ -32,17 +32,9 @@ mod imp {
 
 #[cfg(any(target_arch = "bpf", target_os = "solana"))]
 mod imp {
-    const CURVE25519_EDWARDS: u64 = 0;
-
-    extern "C" {
-        fn sol_curve_multiscalar_mul(
-            curve_id: u64,
-            scalars_addr: *const u8,
-            points_addr: *const u8,
-            points_len: u64,
-            result_point_addr: *mut u8,
-        ) -> u64;
-    }
+    use solana_define_syscall::{
+        curve_constants::CURVE25519_EDWARDS, definitions::sol_curve_multiscalar_mul,
+    };
 
     #[inline(always)]
     pub(crate) fn multiscalar_multiply_edwards(

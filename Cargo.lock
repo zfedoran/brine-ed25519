@@ -19,6 +19,7 @@ dependencies = [
  "rand",
  "sha2",
  "solana-address",
+ "solana-define-syscall",
  "solana-program-error",
 ]
 
@@ -203,6 +204,12 @@ name = "solana-address"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1384b52c435a750cc9c538760fc7bb472fd78e65a9900a2d07312c5bb335b72"
+
+[[package]]
+name = "solana-define-syscall"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf8209ece2bd9f1450e672858ffc0e5c8c786ff6916d2a862b126dd0128f380f"
 
 [[package]]
 name = "solana-program-error"

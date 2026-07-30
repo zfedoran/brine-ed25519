@@ -481,11 +481,12 @@ dependencies = [
 
 [[package]]
 name = "brine-ed25519"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "curve25519-dalek",
  "sha2 0.10.9",
  "solana-address",
+ "solana-define-syscall 5.2.0",
  "solana-program-error",
 ]
 
