@@ -10,7 +10,6 @@ crate-type = ["cdylib", "lib"]
 
 [features]
 fast-sha512 = ["brine-ed25519/fast-sha512"]
-sha512-syscall = ["brine-ed25519/sha512-syscall"]
 
 [dependencies]
 brine-ed25519 = { path = "../" }

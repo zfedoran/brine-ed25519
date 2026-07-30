@@ -1,12 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(unexpected_cfgs)]
 
-#[cfg(feature = "sha512-syscall")]
-use brine_ed25519::hasher::Sha512Syscall as TestSha512;
-#[cfg(all(feature = "fast-sha512", not(feature = "sha512-syscall")))]
-use brine_ed25519::hasher::FastSha512 as TestSha512;
-#[cfg(not(any(feature = "fast-sha512", feature = "sha512-syscall")))]
-use brine_ed25519::hasher::Sha512 as TestSha512;
 use brine_ed25519::{verify, Address};
 use pinocchio::{default_allocator, nostd_panic_handler};
 
@@ -27,7 +21,7 @@ nostd_panic_handler!();
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn entrypoint() -> u64 {
-    match verify::<TestSha512>(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, &[b"hello world"]) {
+    match verify(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, &[b"hello world"]) {
         Ok(_) => 0,
         Err(e) => e.into(),
     }

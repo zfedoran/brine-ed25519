@@ -1,6 +1,6 @@
 [package]
 name = "brine-ed25519"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "Ed25519 signature verification for Solana SVM programs using curve25519 syscalls"
 license = "MIT"
@@ -13,7 +13,14 @@ categories = ["cryptography", "no-std", "wasm", "embedded"]
 crate-type = ["lib"]
 
 [features]
+# Opt out of the `sol_sha512` syscall and hash the challenge in-program
+# (using the hand-rolled FastSha512). For clusters/SVM runtimes where
+# SIMD-0512 is not active. Enabling this anywhere in the dependency tree
+# opts the whole program out of the syscall. Same feature name as 0.8.x,
+# so existing Cargo.toml entries keep working.
 fast-sha512 = []
+# No-op: the syscall is the default since 0.9. Kept so 0.8.x feature
+# lists still resolve.
 sha512-syscall = []
 
 [dependencies]

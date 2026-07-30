@@ -21,10 +21,47 @@ const NEG_G: [u8; 32] = [
     102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 230,
 ];
 
-/// Verify an ed25519 signature over a vectored message using the provided
-/// hash implementation.
+/// The hash implementation used by [`verify`]: the `sol_sha512` syscall
+/// (SIMD-0512) on Solana targets, the in-program `FastSha512` when the
+/// `fast-sha512` feature opts out of the syscall, and the software `sha2`
+/// implementation on host builds.
+#[cfg(all(
+    any(target_arch = "bpf", target_os = "solana"),
+    not(feature = "fast-sha512")
+))]
+type DefaultHasher = crate::hasher::Sha512Syscall;
+#[cfg(all(
+    any(target_arch = "bpf", target_os = "solana"),
+    feature = "fast-sha512"
+))]
+type DefaultHasher = crate::hasher::FastSha512;
+#[cfg(not(any(target_arch = "bpf", target_os = "solana")))]
+type DefaultHasher = crate::hasher::Sha512;
+
+/// Verify an ed25519 signature over a vectored message.
+///
+/// On Solana targets the challenge hash `H(R || A || M)` is computed via the
+/// `sol_sha512` syscall
+/// ([SIMD-0512](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0512-sha512-syscall.md)),
+/// which requires the `enable_sha512_syscall` feature gate
+/// (`s512oDwgx8hjMnaQjXfqqrZroVj4HvC6TkN3iSSWXCh`) to be active on the
+/// target cluster. On clusters without the gate (or other SVM runtimes
+/// without the syscall), build with the `fast-sha512` feature to hash
+/// in-program instead. Host builds always hash in software.
 #[inline(always)]
-pub fn verify<H: Hasher>(
+pub fn verify(
+    pubkey: &Address,
+    sig: &Signature,
+    messages: &[&[u8]],
+) -> Result<(), ProgramError> {
+    verify_with_hasher::<DefaultHasher>(pubkey, sig, messages)
+}
+
+/// Verify an ed25519 signature over a vectored message using the provided
+/// hash implementation. Most callers want [`verify`]; this is the escape
+/// hatch for custom [`Hasher`] implementations.
+#[inline(always)]
+pub fn verify_with_hasher<H: Hasher>(
     pubkey: &Address,
     sig: &Signature,
     messages: &[&[u8]],
@@ -222,15 +259,12 @@ mod tests {
             142, 73, 85, 43, 81, 152, 204, 13,
         ];
 
-        assert!(verify::<Sha512>(&pubkey, &sig, &[b"hello world"]).is_ok());
-        assert!(verify::<Sha512>(&pubkey, &sig, &[b"not the right message"]).is_err());
+        assert!(verify(&pubkey, &sig, &[b"hello world"]).is_ok());
+        assert!(verify(&pubkey, &sig, &[b"not the right message"]).is_err());
     }
 
-    #[cfg(feature = "sha512-syscall")]
     #[test]
-    fn test_hello_world_syscall_hasher_host_fallback() {
-        use crate::hasher::Sha512Syscall;
-
+    fn test_hello_world_with_hasher() {
         let pubkey = Address::from([
             73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233,
             49, 154, 201, 171, 175, 47, 6, 223, 101, 105, 80, 95, 166,
@@ -242,8 +276,8 @@ mod tests {
             142, 73, 85, 43, 81, 152, 204, 13,
         ];
 
-        assert!(verify::<Sha512Syscall>(&pubkey, &sig, &[b"hello world"]).is_ok());
-        assert!(verify::<Sha512Syscall>(&pubkey, &sig, &[b"not the right message"]).is_err());
+        assert!(verify_with_hasher::<Sha512>(&pubkey, &sig, &[b"hello world"]).is_ok());
+        assert!(verify_with_hasher::<Sha512>(&pubkey, &sig, &[b"not the right message"]).is_err());
     }
 
     #[test]
@@ -257,7 +291,7 @@ mod tests {
         ];
 
         assert_eq!(
-            verify::<Sha512>(&pubkey, &sig, &[b"hello world"]),
+            verify(&pubkey, &sig, &[b"hello world"]),
             Err(ProgramError::InvalidArgument)
         );
     }
@@ -276,7 +310,7 @@ mod tests {
         ];
 
         assert_eq!(
-            verify::<Sha512>(&pubkey, &sig, &[b"not the right message"]),
+            verify(&pubkey, &sig, &[b"not the right message"]),
             Err(ProgramError::InvalidArgument)
         );
     }
@@ -297,8 +331,8 @@ mod tests {
         let messagev: &[&[u8]] = &[b"hello", b" ", b"world"];
         let bad_messagev: &[&[u8]] = &[b"hello", b" ", b"there"];
 
-        assert!(verify::<Sha512>(&pubkey, &sig, messagev).is_ok());
-        assert!(verify::<Sha512>(&pubkey, &sig, bad_messagev).is_err());
+        assert!(verify(&pubkey, &sig, messagev).is_ok());
+        assert!(verify(&pubkey, &sig, bad_messagev).is_err());
     }
 
     #[test]
@@ -317,8 +351,8 @@ mod tests {
             0x65, 0x51, 0x41, 0x43, 0x8e, 0x7a, 0x10, 0x0b,
         ];
 
-        assert!(verify::<Sha512>(&pubkey, &sig, &[b""]).is_ok());
-        assert!(verify::<Sha512>(&pubkey, &sig, &[b"not the right message"]).is_err());
+        assert!(verify(&pubkey, &sig, &[b""]).is_ok());
+        assert!(verify(&pubkey, &sig, &[b"not the right message"]).is_err());
     }
 
     #[test]
@@ -337,8 +371,8 @@ mod tests {
             0xb0, 0x0d, 0x29, 0x16, 0x12, 0xbb, 0x0c, 0x00,
         ];
 
-        assert!(verify::<Sha512>(&pubkey, &sig, &[b"r"]).is_ok());
-        assert!(verify::<Sha512>(&pubkey, &sig, &[b"not the right message"]).is_err());
+        assert!(verify(&pubkey, &sig, &[b"r"]).is_ok());
+        assert!(verify(&pubkey, &sig, &[b"not the right message"]).is_err());
     }
 
     #[test]
@@ -359,8 +393,8 @@ mod tests {
 
         let message: &[u8] = &[0xaf, 0x82];
 
-        assert!(verify::<Sha512>(&pubkey, &sig, &[message]).is_ok());
-        assert!(verify::<Sha512>(&pubkey, &sig, &[b"not the right message"]).is_err());
+        assert!(verify(&pubkey, &sig, &[message]).is_ok());
+        assert!(verify(&pubkey, &sig, &[b"not the right message"]).is_err());
     }
 
     #[test]

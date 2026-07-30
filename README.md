@@ -8,27 +8,35 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 ---
 
-## ⚡ Performance
+## Which version should I use?
 
-| Operation                | Feature flag     | CU (Approx.) | Improvement |
-|--------------------------|------------------|--------------|-------------|
-| `verify::<Sha512>`       | default          |      ~12,537 | baseline    |
-| `verify::<FastSha512>`   | `fast-sha512`    |      ~12,243 | -294 CU (~2.4%) |
-| `verify::<Sha512Syscall>`| `sha512-syscall` |       ~4,759 | -7,778 CU (~62%) |
-
-These values are measured inside the Solana SVM via `test-program/` and depend on the message size.
-
-`Sha512Syscall` computes the challenge hash via the `sol_sha512` syscall
-([SIMD-0512](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0512-sha512-syscall.md))
-instead of hashing in-program, which is where nearly all of the CU savings come from.
+| Version | Default hash path | Use when |
+|---------|-------------------|----------|
+| **0.9.x** | `sol_sha512` syscall ([SIMD-0512](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0512-sha512-syscall.md)) | The `enable_sha512_syscall` feature gate is active on your target cluster (devnet and testnet today; mainnet-beta pending) |
+| **0.8.x** | In-program SHA-512, syscall opt-in via `sha512-syscall` feature | You deploy to mainnet-beta before SIMD-0512 activates |
 
 > [!WARNING]
-> The `sol_sha512` syscall is gated by the `enable_sha512_syscall` feature
-> (`s512oDwgx8hjMnaQjXfqqrZroVj4HvC6TkN3iSSWXCh`). It is currently **active on
-> devnet and testnet, but not yet on mainnet-beta**. A program built with the
-> `sha512-syscall` feature **will fail to deploy/load** on any cluster where the
-> gate is inactive (unresolved `sol_sha512` symbol at ELF verification). Use the
-> default or `fast-sha512` paths for mainnet until the feature activates.
+> 0.9.x uses the `sol_sha512` syscall **by default**. The syscall is gated by
+> `enable_sha512_syscall` (`s512oDwgx8hjMnaQjXfqqrZroVj4HvC6TkN3iSSWXCh`),
+> currently **active on devnet and testnet, but not yet on mainnet-beta**. A
+> program built with the syscall path **will fail to deploy/load** on any
+> cluster where the gate is inactive (unresolved `sol_sha512` symbol at ELF
+> verification). For mainnet today, pin `0.8.x`, or build 0.9.x with the
+> `fast-sha512` feature. Once the gate is active on mainnet, 0.9.x is the
+> intended end state of this crate.
+
+---
+
+## ⚡ Performance
+
+| Operation | Feature flag  | CU (Approx.) | Notes |
+|-----------|---------------|--------------|-------|
+| `verify`  | default       |       ~4,759 | challenge hash via `sol_sha512` syscall |
+| `verify`  | `fast-sha512` |      ~12,243 | in-program SHA-512, works on any cluster |
+
+These values are measured inside the Solana SVM via `test-program/` and depend on the message size.
+Almost the entire difference is the cost of hashing `H(R || A || M)` in-program versus
+one vectored syscall (85 CU base + ~max(10, len/2) CU per slice).
 
 ---
 
@@ -46,47 +54,41 @@ Signature verification roughly follows [RFC 8032](https://datatracker.ietf.org/d
 
 ```rust
 use brine_ed25519::*;
-use brine_ed25519::hasher::Sha512;
 
 let pubkey: [u8; 32] = [...];
 let sig: [u8; 64] = [...];
 
 // Single message
-verify::<Sha512>(&pubkey, &sig, &[b"hello world"])?;
+verify(&pubkey, &sig, &[b"hello world"])?;
 
 // Vectored message
-verify::<Sha512>(&pubkey, &sig, &[b"hello", b" ", b"world"])?;
+verify(&pubkey, &sig, &[b"hello", b" ", b"world"])?;
 
 // Prehashed challenge (precomputed H(R || A || M))
 verify_prehashed(&pubkey, &sig, &challenge)?;
 ```
 
-Custom hash implementations are supported via the `Hasher` trait.
+Custom hash implementations are supported via the `Hasher` trait and
+`verify_with_hasher::<H>`.
 
-To opt into the `sol_sha512` syscall path (devnet/testnet today, mainnet once
-SIMD-0512 activates — see the warning above):
-
-```toml
-brine-ed25519 = { version = "0.8", features = ["sha512-syscall"] }
-```
-
-```rust
-use brine_ed25519::hasher::Sha512Syscall;
-
-verify::<Sha512Syscall>(&pubkey, &sig, &[b"hello world"])?;
-```
-
-For a slightly faster in-program hash that works on every cluster today:
+For clusters or SVM runtimes where the `sol_sha512` syscall is not available,
+opt into in-program hashing (enabling this anywhere in the dependency tree opts
+the whole program out of the syscall):
 
 ```toml
-brine-ed25519 = { version = "0.8", features = ["fast-sha512"] }
+brine-ed25519 = { version = "0.9", features = ["fast-sha512"] }
 ```
 
-```rust
-use brine_ed25519::hasher::FastSha512;
+### Migrating from 0.8.x
 
-verify::<FastSha512>(&pubkey, &sig, &[b"hello world"])?;
-```
+`verify::<Sha512>(...)` / `verify::<FastSha512>(...)` / `verify::<Sha512Syscall>(...)`
+are replaced by a single non-generic `verify(...)`, which picks the syscall on-chain
+and `sha2` on host builds. The generic form lives on as `verify_with_hasher::<H>(...)`.
+
+Feature names are unchanged, so existing `Cargo.toml` entries keep resolving:
+`fast-sha512` now means "hash in-program instead of using the syscall" (the safe
+choice for clusters without SIMD-0512), and `sha512-syscall` is a no-op since the
+syscall is the default.
 
 ---
 

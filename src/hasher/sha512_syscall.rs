@@ -9,100 +9,71 @@
 //! Requires the `enable_sha512_syscall` feature gate
 //! (`s512oDwgx8hjMnaQjXfqqrZroVj4HvC6TkN3iSSWXCh`) to be active on the
 //! target cluster. Programs built with this hasher fail to load on clusters
-//! where the gate is inactive (unresolved `sol_sha512` symbol).
+//! where the gate is inactive (unresolved `sol_sha512` symbol). Enable the
+//! `fast-sha512` feature to fall back to in-program hashing on such
+//! clusters.
 //!
-//! Host builds fall back to the `sha2` implementation so off-chain callers
-//! and tests stay aligned with the on-chain path.
+//! This module is only compiled for Solana targets; host builds use the
+//! `sha2`-backed [`Sha512`](crate::hasher::Sha512) instead.
 
 use crate::hasher::Hasher;
 
-#[cfg(any(target_arch = "bpf", target_os = "solana"))]
-mod imp {
-    use super::Hasher;
+/// Maximum number of `update` calls a single hash may record. The verify
+/// path uses `2 + messages.len()` slices.
+const MAX_SLICES: usize = 16;
 
-    /// Maximum number of `update` calls a single hash may record. The
-    /// verify path uses `2 + messages.len()` slices.
-    const MAX_SLICES: usize = 16;
+/// One syscall input slice: (address, length), matching the runtime's
+/// expected `SolBytes` layout. Stored explicitly rather than as `&[u8]`
+/// so we do not rely on Rust's unspecified fat-pointer layout.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Slice {
+    addr: u64,
+    len: u64,
+}
 
-    /// One syscall input slice: (address, length), matching the runtime's
-    /// expected `SolBytes` layout. Stored explicitly rather than as `&[u8]`
-    /// so we do not rely on Rust's unspecified fat-pointer layout.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct Slice {
-        addr: u64,
-        len: u64,
-    }
+extern "C" {
+    fn sol_sha512(vals: *const u8, val_len: u64, hash_result: *mut u8) -> u64;
+}
 
-    extern "C" {
-        fn sol_sha512(vals: *const u8, val_len: u64, hash_result: *mut u8) -> u64;
-    }
+pub(crate) struct Sha512Syscall {
+    slices: [Slice; MAX_SLICES],
+    count: usize,
+}
 
-    pub struct Sha512Syscall {
-        slices: [Slice; MAX_SLICES],
-        count: usize,
-    }
-
-    impl Hasher for Sha512Syscall {
-        #[inline(always)]
-        fn new() -> Self {
-            Self {
-                slices: [Slice { addr: 0, len: 0 }; MAX_SLICES],
-                count: 0,
-            }
+impl Hasher for Sha512Syscall {
+    #[inline(always)]
+    fn new() -> Self {
+        Self {
+            slices: [Slice { addr: 0, len: 0 }; MAX_SLICES],
+            count: 0,
         }
+    }
 
-        /// Records the slice; the bytes are not read until `finalize`, so
-        /// every slice passed to `update` must remain live until then.
-        #[inline(always)]
-        fn update(&mut self, bytes: &[u8]) {
-            self.slices[self.count] = Slice {
-                addr: bytes.as_ptr() as u64,
-                len: bytes.len() as u64,
-            };
-            self.count += 1;
-        }
+    /// Records the slice; the bytes are not read until `finalize`, so
+    /// every slice passed to `update` must remain live until then.
+    #[inline(always)]
+    fn update(&mut self, bytes: &[u8]) {
+        self.slices[self.count] = Slice {
+            addr: bytes.as_ptr() as u64,
+            len: bytes.len() as u64,
+        };
+        self.count += 1;
+    }
 
-        #[inline(always)]
-        fn finalize(self) -> [u8; 64] {
-            // SAFETY: the syscall reads `count` descriptors and writes all
-            // 64 bytes of the output on return, aborting the VM on any
-            // invalid memory access.
-            let mut out = core::mem::MaybeUninit::<[u8; 64]>::uninit();
-            unsafe {
-                sol_sha512(
-                    self.slices.as_ptr() as *const u8,
-                    self.count as u64,
-                    out.as_mut_ptr() as *mut u8,
-                );
-                out.assume_init()
-            }
+    #[inline(always)]
+    fn finalize(self) -> [u8; 64] {
+        // SAFETY: the syscall reads `count` descriptors and writes all
+        // 64 bytes of the output on return, aborting the VM on any
+        // invalid memory access.
+        let mut out = core::mem::MaybeUninit::<[u8; 64]>::uninit();
+        unsafe {
+            sol_sha512(
+                self.slices.as_ptr() as *const u8,
+                self.count as u64,
+                out.as_mut_ptr() as *mut u8,
+            );
+            out.assume_init()
         }
     }
 }
-
-#[cfg(not(any(target_arch = "bpf", target_os = "solana")))]
-mod imp {
-    use super::Hasher;
-
-    pub struct Sha512Syscall(crate::hasher::Sha512);
-
-    impl Hasher for Sha512Syscall {
-        #[inline(always)]
-        fn new() -> Self {
-            Self(crate::hasher::Sha512::new())
-        }
-
-        #[inline(always)]
-        fn update(&mut self, bytes: &[u8]) {
-            self.0.update(bytes);
-        }
-
-        #[inline(always)]
-        fn finalize(self) -> [u8; 64] {
-            self.0.finalize()
-        }
-    }
-}
-
-pub use imp::Sha512Syscall;
