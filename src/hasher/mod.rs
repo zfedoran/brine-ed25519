@@ -7,6 +7,11 @@ mod fast_sha512;
 #[cfg(feature = "fast-sha512")]
 pub use fast_sha512::FastSha512;
 
+#[cfg(feature = "sha512-syscall")]
+mod sha512_syscall;
+#[cfg(feature = "sha512-syscall")]
+pub use sha512_syscall::Sha512Syscall;
+
 pub trait Hasher: Sized {
     fn new() -> Self;
     fn update(&mut self, bytes: &[u8]);

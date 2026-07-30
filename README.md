@@ -10,13 +10,25 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 ## ⚡ Performance
 
-| Operation               | Feature flag  | CU (Approx.) | Improvement |
-|-------------------------|---------------|--------------|-------------|
-| `verify::<Sha512>`      | default       |      ~12,549 | baseline    |
-| `verify::<FastSha512>`  | `fast-sha512` |      ~12,252 | -297 CU (~2.4%) |
+| Operation                | Feature flag     | CU (Approx.) | Improvement |
+|--------------------------|------------------|--------------|-------------|
+| `verify::<Sha512>`       | default          |      ~12,537 | baseline    |
+| `verify::<FastSha512>`   | `fast-sha512`    |      ~12,243 | -294 CU (~2.4%) |
+| `verify::<Sha512Syscall>`| `sha512-syscall` |       ~4,759 | -7,778 CU (~62%) |
 
 These values are measured inside the Solana SVM via `test-program/` and depend on the message size.
-`FastSha512` is available behind the `fast-sha512` feature flag.
+
+`Sha512Syscall` computes the challenge hash via the `sol_sha512` syscall
+([SIMD-0512](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0512-sha512-syscall.md))
+instead of hashing in-program, which is where nearly all of the CU savings come from.
+
+> [!WARNING]
+> The `sol_sha512` syscall is gated by the `enable_sha512_syscall` feature
+> (`s512oDwgx8hjMnaQjXfqqrZroVj4HvC6TkN3iSSWXCh`). It is currently **active on
+> devnet and testnet, but not yet on mainnet-beta**. A program built with the
+> `sha512-syscall` feature **will fail to deploy/load** on any cluster where the
+> gate is inactive (unresolved `sol_sha512` symbol at ELF verification). Use the
+> default or `fast-sha512` paths for mainnet until the feature activates.
 
 ---
 
@@ -51,10 +63,23 @@ verify_prehashed(&pubkey, &sig, &challenge)?;
 
 Custom hash implementations are supported via the `Hasher` trait.
 
-To opt into the faster SHA-512 path:
+To opt into the `sol_sha512` syscall path (devnet/testnet today, mainnet once
+SIMD-0512 activates — see the warning above):
 
 ```toml
-brine-ed25519 = { version = "0.6", features = ["fast-sha512"] }
+brine-ed25519 = { version = "0.8", features = ["sha512-syscall"] }
+```
+
+```rust
+use brine_ed25519::hasher::Sha512Syscall;
+
+verify::<Sha512Syscall>(&pubkey, &sig, &[b"hello world"])?;
+```
+
+For a slightly faster in-program hash that works on every cluster today:
+
+```toml
+brine-ed25519 = { version = "0.8", features = ["fast-sha512"] }
 ```
 
 ```rust

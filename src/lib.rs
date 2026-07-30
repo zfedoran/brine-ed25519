@@ -226,6 +226,26 @@ mod tests {
         assert!(verify::<Sha512>(&pubkey, &sig, &[b"not the right message"]).is_err());
     }
 
+    #[cfg(feature = "sha512-syscall")]
+    #[test]
+    fn test_hello_world_syscall_hasher_host_fallback() {
+        use crate::hasher::Sha512Syscall;
+
+        let pubkey = Address::from([
+            73, 73, 170, 112, 75, 235, 154, 81, 203, 8, 44, 245, 233, 18, 204, 136, 162, 9, 233,
+            49, 154, 201, 171, 175, 47, 6, 223, 101, 105, 80, 95, 166,
+        ]);
+        let sig: [u8; 64] = [
+            164, 121, 89, 242, 88, 29, 80, 177, 104, 20, 102, 176, 48, 133, 68, 8, 105, 33, 58, 86,
+            28, 108, 198, 140, 160, 219, 62, 184, 154, 181, 140, 33, 35, 102, 183, 203, 111, 33,
+            55, 170, 180, 138, 92, 196, 185, 201, 122, 167, 15, 112, 9, 228, 226, 112, 111, 10,
+            142, 73, 85, 43, 81, 152, 204, 13,
+        ];
+
+        assert!(verify::<Sha512Syscall>(&pubkey, &sig, &[b"hello world"]).is_ok());
+        assert!(verify::<Sha512Syscall>(&pubkey, &sig, &[b"not the right message"]).is_err());
+    }
+
     #[test]
     fn test_error_invalid_public_key() {
         let pubkey = Address::from(EIGHT_TORSION[0]);
