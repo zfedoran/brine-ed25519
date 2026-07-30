@@ -6,27 +6,6 @@
 
 A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
----
-
-## Which version should I use?
-
-| Version | Default hash path | Use when |
-|---------|-------------------|----------|
-| **0.9.x** | `sol_sha512` syscall ([SIMD-0512](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0512-sha512-syscall.md)) | The `enable_sha512_syscall` feature gate is active on your target cluster (devnet and testnet today; mainnet-beta pending) |
-| **0.8.x** | In-program SHA-512, syscall opt-in via `sha512-syscall` feature | You deploy to mainnet-beta before SIMD-0512 activates |
-
-> [!WARNING]
-> 0.9.x uses the `sol_sha512` syscall **by default**. The syscall is gated by
-> `enable_sha512_syscall` (`s512oDwgx8hjMnaQjXfqqrZroVj4HvC6TkN3iSSWXCh`),
-> currently **active on devnet and testnet, but not yet on mainnet-beta**. A
-> program built with the syscall path **will fail to deploy/load** on any
-> cluster where the gate is inactive (unresolved `sol_sha512` symbol at ELF
-> verification). For mainnet today, pin `0.8.x`, or build 0.9.x with the
-> `fast-sha512` feature. Once the gate is active on mainnet, 0.9.x is the
-> intended end state of this crate.
-
----
-
 ## ⚡ Performance
 
 | Operation | Feature flag  | CU (Approx.) | Notes |
@@ -78,6 +57,27 @@ the whole program out of the syscall):
 ```toml
 brine-ed25519 = { version = "0.9", features = ["fast-sha512"] }
 ```
+
+---
+
+## Which version should I use?
+
+| Version | Default hash path | Use when |
+|---------|-------------------|----------|
+| **0.9.x** | `sol_sha512` syscall ([SIMD-0512](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0512-sha512-syscall.md)) | The `enable_sha512_syscall` feature gate is active on your target cluster (devnet and testnet today; mainnet-beta pending) |
+| **0.8.x** | In-program SHA-512, syscall opt-in via `sha512-syscall` feature | You deploy to mainnet-beta before SIMD-0512 activates |
+
+> [!WARNING]
+> 0.9.x uses the `sol_sha512` syscall **by default**. The syscall is gated by
+> `enable_sha512_syscall` (`s512oDwgx8hjMnaQjXfqqrZroVj4HvC6TkN3iSSWXCh`),
+> currently **active on devnet and testnet, but not yet on mainnet-beta**. A
+> program built with the syscall path **will fail to deploy/load** on any
+> cluster where the gate is inactive (unresolved `sol_sha512` symbol at ELF
+> verification). For mainnet today, pin `0.8.x`, or build 0.9.x with the
+> `fast-sha512` feature. Once the gate is active on mainnet, 0.9.x is the
+> intended end state of this crate.
+
+---
 
 ### Migrating from 0.8.x
 
