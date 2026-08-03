@@ -40,6 +40,9 @@ type DefaultHasher = crate::hasher::Sha512;
 
 /// Verify an ed25519 signature over a vectored message.
 ///
+/// This omits small-order rejection. Use [`verify_strict`] unless the public
+/// key has already been validated.
+///
 /// On Solana targets the challenge hash `H(R || A || M)` is computed via the
 /// `sol_sha512` syscall
 /// ([SIMD-0512](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0512-sha512-syscall.md)),
@@ -49,17 +52,23 @@ type DefaultHasher = crate::hasher::Sha512;
 /// without the syscall), build with the `fast-sha512` feature to hash
 /// in-program instead. Host builds always hash in software.
 #[inline(always)]
-pub fn verify(
+pub fn verify(pubkey: &Address, sig: &Signature, messages: &[&[u8]]) -> Result<(), ProgramError> {
+    verify_with_hasher::<DefaultHasher>(pubkey, sig, messages)
+}
+
+/// Strictly verify an ed25519 signature, rejecting small-order public keys and
+/// `R` values. This matches the Solana ed25519 precompile's point checks.
+#[inline(always)]
+pub fn verify_strict(
     pubkey: &Address,
     sig: &Signature,
     messages: &[&[u8]],
 ) -> Result<(), ProgramError> {
-    verify_with_hasher::<DefaultHasher>(pubkey, sig, messages)
+    verify_with_hasher_strict::<DefaultHasher>(pubkey, sig, messages)
 }
 
-/// Verify an ed25519 signature over a vectored message using the provided
-/// hash implementation. Most callers want [`verify`]; this is the escape
-/// hatch for custom [`Hasher`] implementations.
+/// Verify a signature using the provided hash implementation without strict
+/// point validation.
 #[inline(always)]
 pub fn verify_with_hasher<H: Hasher>(
     pubkey: &Address,
@@ -74,9 +83,29 @@ pub fn verify_with_hasher<H: Hasher>(
     verify_prehashed(pubkey, sig, &challenge)
 }
 
+/// Strictly verify a signature using the provided hash implementation.
+#[inline(always)]
+pub fn verify_with_hasher_strict<H: Hasher>(
+    pubkey: &Address,
+    sig: &Signature,
+    messages: &[&[u8]],
+) -> Result<(), ProgramError> {
+    // SAFETY: first 32 bytes of [u8; 64] is a valid [u8; 32].
+    let sig_r: &[u8; 32] = unsafe { &*(sig.as_ptr() as *const [u8; 32]) };
+    // SAFETY: Address is #[repr(transparent)] over [u8; 32].
+    let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
+
+    validate_points(pubkey_bytes, sig_r)?;
+
+    let challenge = challenge::<H>(sig_r, pubkey, messages);
+
+    verify_prehashed(pubkey, sig, &challenge)
+}
+
 /// Verify an ed25519 signature using a precomputed challenge hash `H(R || A || M)`.
 /// This is useful in cases where the challenge hash needs to be computed off-chain
 /// or pre-computed on-chain for efficiency reasons.
+/// Use [`verify_prehashed_strict`] unless the public key has already been validated.
 ///
 /// # Safety (validation delegated to the MSM syscall)
 ///
@@ -93,10 +122,6 @@ pub fn verify_with_hasher<H: Hasher>(
 ///
 /// If any of those checks fail the MSM returns `None`, which we map to
 /// `ProgramError::InvalidArgument`.
-///
-/// **Small-order rejection** *is* performed here (for both `pubkey` and
-/// `R`) via a table lookup against the eight torsion points. The MSM
-/// syscall does not do this check itself.
 #[inline(always)]
 #[allow(non_snake_case)]
 pub fn verify_prehashed(
@@ -104,18 +129,11 @@ pub fn verify_prehashed(
     sig: &Signature,
     challenge: &[u8; 64],
 ) -> Result<(), ProgramError> {
-    // Split signature into R (first 32 bytes) and s (last 32 bytes).
     // SAFETY: [u8; 64] has the same layout as [[u8; 32]; 2].
     let (sig_r, sig_s): &([u8; 32], [u8; 32]) = unsafe { &*(sig as *const [u8; 64] as *const _) };
 
     // SAFETY: Address is #[repr(transparent)] over [u8; 32].
     let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
-
-    // Reject small-order pubkey and R. These would allow forgeries that
-    // verify against any message, so we check even though the MSM does not.
-    if is_small_order(pubkey_bytes) || is_small_order(sig_r) {
-        return Err(ProgramError::InvalidArgument);
-    }
 
     // Build the [[u8; 32]; 2] scalar array in place so that the reduced `k`
     // limbs can be written straight into the MSM input slot instead of
@@ -140,6 +158,23 @@ pub fn verify_prehashed(
     }
 }
 
+/// Strictly verify a signature using a precomputed challenge hash.
+#[inline(always)]
+#[allow(non_snake_case)]
+pub fn verify_prehashed_strict(
+    pubkey: &Address,
+    sig: &Signature,
+    challenge: &[u8; 64],
+) -> Result<(), ProgramError> {
+    // SAFETY: first 32 bytes of [u8; 64] is a valid [u8; 32].
+    let sig_r: &[u8; 32] = unsafe { &*(sig.as_ptr() as *const [u8; 32]) };
+    // SAFETY: Address is #[repr(transparent)] over [u8; 32].
+    let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
+
+    validate_points(pubkey_bytes, sig_r)?;
+    verify_prehashed(pubkey, sig, challenge)
+}
+
 #[inline(always)]
 fn challenge<H: Hasher>(sig_r: &[u8; 32], pubkey: &Address, messagev: &[&[u8]]) -> [u8; 64] {
     let mut hasher = H::new();
@@ -159,9 +194,7 @@ const G: [u8; 32] = [
     102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102,
 ];
 
-/// The eight small-order (torsion) points on Curve25519, in compressed
-/// Edwards form. Any point matching one of these is rejected during
-/// signature verification.
+/// Canonical encodings of the eight small-order points.
 const EIGHT_TORSION: [[u8; 32]; 8] = [
     [
         0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -205,11 +238,43 @@ const EIGHT_TORSION: [[u8; 32]; 8] = [
     ],
 ];
 
-/// Determine if this point is of small order by checking against the
-/// eight known torsion points (table lookup, no curve syscalls).
+/// Check every encoding of the eight small-order points.
+#[cfg(test)]
 #[inline(always)]
 fn is_small_order(point: &[u8; 32]) -> bool {
+    is_small_order_alias(point) || is_canonical_small_order(point)
+}
+
+#[inline(always)]
+fn is_canonical_small_order(point: &[u8; 32]) -> bool {
     EIGHT_TORSION.iter().any(|t| *t == *point)
+}
+
+#[inline(always)]
+fn is_small_order_alias(point: &[u8; 32]) -> bool {
+    match point[31] & 0x7f {
+        0x7f => {
+            point[1..31].iter().all(|&b| b == 0xff)
+                && (matches!(point[0], 0xed | 0xee) || point[0] == 0xec && point[31] & 0x80 != 0)
+        }
+        0x00 => {
+            point[31] & 0x80 != 0 && point[0] == 0x01 && point[1..31].iter().all(|&b| b == 0x00)
+        }
+        _ => false,
+    }
+}
+
+#[inline(always)]
+fn validate_points(pubkey: &[u8; 32], sig_r: &[u8; 32]) -> Result<(), ProgramError> {
+    if is_small_order_alias(pubkey)
+        || is_small_order_alias(sig_r)
+        || is_canonical_small_order(pubkey)
+        || is_canonical_small_order(sig_r)
+    {
+        Err(ProgramError::InvalidArgument)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -218,32 +283,83 @@ mod tests {
     use crate::hasher::{Hasher, Sha512};
     use curve25519_dalek::constants;
 
+    fn plus_p(y: u8, sign: u8) -> [u8; 32] {
+        let mut bytes = [0xffu8; 32];
+        bytes[0] = 0xed + y;
+        bytes[31] = 0x7f | sign;
+        bytes
+    }
+
+    fn forged_signature() -> [u8; 64] {
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&G);
+        sig[32] = 1;
+        sig
+    }
+
+    #[test]
+    fn test_small_order() {
+        use curve25519_dalek::edwards::CompressedEdwardsY;
+
+        assert!(!is_small_order(&G));
+        for (expected, point) in EIGHT_TORSION.iter().zip(constants::EIGHT_TORSION) {
+            assert_eq!(*expected, point.compress().to_bytes());
+            assert!(is_small_order(expected));
+        }
+
+        for y in 0..19 {
+            for sign in [0x00u8, 0x80] {
+                let encoding = plus_p(y, sign);
+                let expected = CompressedEdwardsY(encoding)
+                    .decompress()
+                    .is_some_and(|point| point.is_small_order());
+                assert_eq!(is_small_order(&encoding), expected, "y={y}, sign={sign:#x}");
+            }
+        }
+
+        for i in [0, 4] {
+            let mut negative_zero = EIGHT_TORSION[i];
+            negative_zero[31] |= 0x80;
+            assert!(is_small_order(&negative_zero));
+        }
+    }
+
+    #[test]
+    fn test_strict_rejects_forged_signature() {
+        let sig = forged_signature();
+        let pubkey = Address::from(plus_p(1, 0));
+
+        assert!(verify(&pubkey, &sig, &[b"anything"]).is_ok());
+        assert_eq!(
+            verify_strict(&pubkey, &sig, &[b"anything"]),
+            Err(ProgramError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn test_negative_zero_r_rejected() {
+        let pubkey = Address::from(G);
+        let mut r = EIGHT_TORSION[0];
+        r[31] |= 0x80;
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&r);
+        sig[32] = 1;
+        let mut challenge = [0u8; 64];
+        challenge[0] = 1;
+
+        assert!(verify_prehashed(&pubkey, &sig, &challenge).is_ok());
+        assert_eq!(
+            verify_prehashed_strict(&pubkey, &sig, &challenge),
+            Err(ProgramError::InvalidArgument)
+        );
+    }
+
     #[test]
     fn test_base_point() {
         let base_point = constants::ED25519_BASEPOINT_POINT;
         let compressed = base_point.compress();
         let bytes = compressed.to_bytes();
         assert_eq!(bytes, G);
-    }
-
-    #[test]
-    fn test_small_order() {
-        // Refer to https://github.com/dalek-cryptography/curve25519-dalek/blob/43a16f03d4c635a8836c23ac07244c116ea3aab8/curve25519-dalek/src/edwards.rs#L1992
-
-        // Base point (has large order)
-        assert_eq!(is_small_order(&G), false);
-
-        // Torsion points (have small order)
-        for i in 0..8 {
-            let torsion_point = constants::EIGHT_TORSION[i];
-            let compressed = torsion_point.compress();
-            let torsion_point_bytes = compressed.to_bytes();
-            assert_eq!(
-                torsion_point_bytes, EIGHT_TORSION[i],
-                "torsion point {i} mismatch"
-            );
-            assert_eq!(is_small_order(&torsion_point_bytes), true);
-        }
     }
 
     #[test]
@@ -291,7 +407,7 @@ mod tests {
         ];
 
         assert_eq!(
-            verify(&pubkey, &sig, &[b"hello world"]),
+            verify_strict(&pubkey, &sig, &[b"hello world"]),
             Err(ProgramError::InvalidArgument)
         );
     }
