@@ -40,8 +40,10 @@ type DefaultHasher = crate::hasher::Sha512;
 
 /// Verify an ed25519 signature over a vectored message.
 ///
-/// This omits small-order rejection. Use [`verify_strict`] unless the public
-/// key has already been validated.
+/// Point encodings are validated according to RFC 8032. This uses the
+/// RFC-permitted cofactorless verification equation, so canonical small-order
+/// points are not rejected. Use [`verify_strict`] when that additional check
+/// is required.
 ///
 /// On Solana targets the challenge hash `H(R || A || M)` is computed via the
 /// `sol_sha512` syscall
@@ -67,8 +69,8 @@ pub fn verify_strict(
     verify_with_hasher_strict::<DefaultHasher>(pubkey, sig, messages)
 }
 
-/// Verify a signature using the provided hash implementation without strict
-/// point validation.
+/// Verify a signature using the provided hash implementation and RFC 8032
+/// point decoding rules, without additional small-order rejection.
 #[inline(always)]
 pub fn verify_with_hasher<H: Hasher>(
     pubkey: &Address,
@@ -77,10 +79,14 @@ pub fn verify_with_hasher<H: Hasher>(
 ) -> Result<(), ProgramError> {
     // SAFETY: first 32 bytes of [u8; 64] is a valid [u8; 32].
     let sig_r: &[u8; 32] = unsafe { &*(sig.as_ptr() as *const [u8; 32]) };
+    // SAFETY: Address is #[repr(transparent)] over [u8; 32].
+    let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
+
+    validate_point_encodings(pubkey_bytes, sig_r)?;
 
     let challenge = challenge::<H>(sig_r, pubkey, messages);
 
-    verify_prehashed(pubkey, sig, &challenge)
+    verify_prehashed_unchecked(pubkey, sig, &challenge)
 }
 
 /// Strictly verify a signature using the provided hash implementation.
@@ -95,17 +101,19 @@ pub fn verify_with_hasher_strict<H: Hasher>(
     // SAFETY: Address is #[repr(transparent)] over [u8; 32].
     let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
 
-    validate_points(pubkey_bytes, sig_r)?;
+    validate_points_strict(pubkey_bytes, sig_r)?;
 
     let challenge = challenge::<H>(sig_r, pubkey, messages);
 
-    verify_prehashed(pubkey, sig, &challenge)
+    verify_prehashed_unchecked(pubkey, sig, &challenge)
 }
 
 /// Verify an ed25519 signature using a precomputed challenge hash `H(R || A || M)`.
 /// This is useful in cases where the challenge hash needs to be computed off-chain
 /// or pre-computed on-chain for efficiency reasons.
-/// Use [`verify_prehashed_strict`] unless the public key has already been validated.
+/// Point encodings are validated according to RFC 8032. Use
+/// [`verify_prehashed_strict`] when canonical small-order points must also be
+/// rejected.
 ///
 /// # Safety (validation delegated to the MSM syscall)
 ///
@@ -125,6 +133,22 @@ pub fn verify_with_hasher_strict<H: Hasher>(
 #[inline(always)]
 #[allow(non_snake_case)]
 pub fn verify_prehashed(
+    pubkey: &Address,
+    sig: &Signature,
+    challenge: &[u8; 64],
+) -> Result<(), ProgramError> {
+    // SAFETY: first 32 bytes of [u8; 64] is a valid [u8; 32].
+    let sig_r: &[u8; 32] = unsafe { &*(sig.as_ptr() as *const [u8; 32]) };
+    // SAFETY: Address is #[repr(transparent)] over [u8; 32].
+    let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
+
+    validate_point_encodings(pubkey_bytes, sig_r)?;
+    verify_prehashed_unchecked(pubkey, sig, challenge)
+}
+
+#[inline(always)]
+#[allow(non_snake_case)]
+fn verify_prehashed_unchecked(
     pubkey: &Address,
     sig: &Signature,
     challenge: &[u8; 64],
@@ -171,8 +195,8 @@ pub fn verify_prehashed_strict(
     // SAFETY: Address is #[repr(transparent)] over [u8; 32].
     let pubkey_bytes: &[u8; 32] = unsafe { &*(pubkey as *const Address as *const [u8; 32]) };
 
-    validate_points(pubkey_bytes, sig_r)?;
-    verify_prehashed(pubkey, sig, challenge)
+    validate_points_strict(pubkey_bytes, sig_r)?;
+    verify_prehashed_unchecked(pubkey, sig, challenge)
 }
 
 #[inline(always)]
@@ -238,39 +262,90 @@ const EIGHT_TORSION: [[u8; 32]; 8] = [
     ],
 ];
 
-/// Check every encoding of the eight small-order points.
-#[cfg(test)]
-#[inline(always)]
-fn is_small_order(point: &[u8; 32]) -> bool {
-    is_small_order_alias(point) || is_canonical_small_order(point)
-}
-
 #[inline(always)]
 fn is_canonical_small_order(point: &[u8; 32]) -> bool {
-    EIGHT_TORSION.iter().any(|t| *t == *point)
+    EIGHT_TORSION.contains(point)
+}
+
+/// Apply the RFC 8032 point-encoding checks not provided by dalek's field
+/// decoding: the encoded y-coordinate must be less than p = 2^255 - 19, and
+/// x = 0 may not be encoded with its sign bit set.
+#[inline(always)]
+fn is_canonical_point_encoding(point: &[u8; 32]) -> bool {
+    const TOP: u64 = 0x7fff_ffff_ffff_ffff;
+    const LOW_P: u64 = 0xffff_ffff_ffff_ffed;
+
+    // Almost every valid encoding is decided by the final byte alone. Only
+    // y values near zero or p need the remaining limbs.
+    let final_byte = point[31];
+    match final_byte & 0x7f {
+        0x00 if final_byte & 0x80 != 0 => {
+            // The only invalid encoding in this range is negative zero at
+            // y = 1. Check it only when its top byte makes it possible.
+            point[0] != 1 || point[1..31].iter().any(|&byte| byte != 0)
+        }
+        0x7f => {
+            // Parse little-endian limbs only at the field boundary. The byte
+            // array need not be u64-aligned.
+            let src = point.as_ptr() as *const u64;
+            // SAFETY: point covers four possibly unaligned u64-sized slots.
+            let encoded_top = u64::from_le(unsafe { core::ptr::read_unaligned(src.add(3)) });
+            let top = encoded_top & TOP;
+            if top != TOP {
+                return true;
+            }
+
+            let middle_high = u64::from_le(unsafe { core::ptr::read_unaligned(src.add(2)) });
+            if middle_high != u64::MAX {
+                return true;
+            }
+
+            let middle_low = u64::from_le(unsafe { core::ptr::read_unaligned(src.add(1)) });
+            if middle_low != u64::MAX {
+                return true;
+            }
+
+            let low = u64::from_le(unsafe { core::ptr::read_unaligned(src) });
+            low < LOW_P && !(final_byte & 0x80 != 0 && low == LOW_P - 1)
+        }
+        _ => true,
+    }
 }
 
 #[inline(always)]
-fn is_small_order_alias(point: &[u8; 32]) -> bool {
+fn is_negative_zero(point: &[u8; 32]) -> bool {
+    // RFC 8032 also rejects x = 0 with the x-sign bit set. On edwards25519,
+    // x = 0 occurs at y = 1 and y = p - 1.
+    if point[31] & 0x80 == 0 {
+        return false;
+    }
+
     match point[31] & 0x7f {
-        0x7f => {
-            point[1..31].iter().all(|&b| b == 0xff)
-                && (matches!(point[0], 0xed | 0xee) || point[0] == 0xec && point[31] & 0x80 != 0)
-        }
-        0x00 => {
-            point[31] & 0x80 != 0 && point[0] == 0x01 && point[1..31].iter().all(|&b| b == 0x00)
-        }
+        0x00 => point[0] == 1 && point[1..31].iter().all(|&byte| byte == 0),
+        0x7f => point[0] == 0xec && point[1..31].iter().all(|&byte| byte == 0xff),
         _ => false,
     }
 }
 
 #[inline(always)]
-fn validate_points(pubkey: &[u8; 32], sig_r: &[u8; 32]) -> Result<(), ProgramError> {
-    if is_small_order_alias(pubkey)
-        || is_small_order_alias(sig_r)
-        || is_canonical_small_order(pubkey)
-        || is_canonical_small_order(sig_r)
-    {
+fn validate_point_encodings(pubkey: &[u8; 32], sig_r: &[u8; 32]) -> Result<(), ProgramError> {
+    // The public key is decompressed by the curve implementation, whose field
+    // decoder accepts non-canonical y values, so enforce the full RFC encoding
+    // rules here. R is compared byte-for-byte with the canonical MSM output;
+    // that comparison already rejects y >= p, leaving only negative zero to
+    // reject explicitly.
+    if !is_canonical_point_encoding(pubkey) || is_negative_zero(sig_r) {
+        Err(ProgramError::InvalidArgument)
+    } else {
+        Ok(())
+    }
+}
+
+#[inline(always)]
+fn validate_points_strict(pubkey: &[u8; 32], sig_r: &[u8; 32]) -> Result<(), ProgramError> {
+    validate_point_encodings(pubkey, sig_r)?;
+
+    if is_canonical_small_order(pubkey) || is_canonical_small_order(sig_r) {
         Err(ProgramError::InvalidArgument)
     } else {
         Ok(())
@@ -299,36 +374,79 @@ mod tests {
 
     #[test]
     fn test_small_order() {
-        use curve25519_dalek::edwards::CompressedEdwardsY;
-
-        assert!(!is_small_order(&G));
+        assert!(!is_canonical_small_order(&G));
         for (expected, point) in EIGHT_TORSION.iter().zip(constants::EIGHT_TORSION) {
             assert_eq!(*expected, point.compress().to_bytes());
-            assert!(is_small_order(expected));
-        }
-
-        for y in 0..19 {
-            for sign in [0x00u8, 0x80] {
-                let encoding = plus_p(y, sign);
-                let expected = CompressedEdwardsY(encoding)
-                    .decompress()
-                    .is_some_and(|point| point.is_small_order());
-                assert_eq!(is_small_order(&encoding), expected, "y={y}, sign={sign:#x}");
-            }
-        }
-
-        for i in [0, 4] {
-            let mut negative_zero = EIGHT_TORSION[i];
-            negative_zero[31] |= 0x80;
-            assert!(is_small_order(&negative_zero));
+            assert!(is_canonical_small_order(expected));
         }
     }
 
     #[test]
-    fn test_strict_rejects_forged_signature() {
+    fn test_canonical_point_encoding_boundaries() {
+        assert!(is_canonical_point_encoding(&G));
+        assert!(is_canonical_point_encoding(&NEG_G));
+
+        // p - 1 is the largest field element, with a canonical zero sign.
+        assert!(is_canonical_point_encoding(&EIGHT_TORSION[4]));
+
+        // Every y from p through 2^255 - 1 is non-canonical, independently
+        // of the x-sign bit.
+        for offset in 0..19 {
+            for sign in [0x00u8, 0x80] {
+                assert!(!is_canonical_point_encoding(&plus_p(offset, sign)));
+            }
+        }
+
+        // x = 0 cannot carry a set sign bit. Its two possible y-coordinates
+        // are 1 and p - 1.
+        for i in [0, 4] {
+            let mut negative_zero = EIGHT_TORSION[i];
+            negative_zero[31] |= 0x80;
+            assert!(!is_canonical_point_encoding(&negative_zero));
+        }
+    }
+
+    #[test]
+    fn test_noncanonical_alias_rejected() {
         let sig = forged_signature();
         let pubkey = Address::from(plus_p(1, 0));
 
+        assert_eq!(
+            verify(&pubkey, &sig, &[b"anything"]),
+            Err(ProgramError::InvalidArgument)
+        );
+        assert_eq!(
+            verify_strict(&pubkey, &sig, &[b"anything"]),
+            Err(ProgramError::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn test_noncanonical_r_rejected_by_canonical_result_comparison() {
+        let pubkey = Address::from(G);
+        let challenge = [0u8; 64];
+
+        for offset in 0..19 {
+            for sign in [0x00u8, 0x80] {
+                let mut sig = [0u8; 64];
+                sig[..32].copy_from_slice(&plus_p(offset, sign));
+
+                assert_eq!(
+                    verify_prehashed(&pubkey, &sig, &challenge),
+                    Err(ProgramError::InvalidArgument),
+                    "offset={offset}, sign={sign:#x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_strict_rejects_canonical_small_order_key() {
+        let sig = forged_signature();
+        let pubkey = Address::from(EIGHT_TORSION[0]);
+
+        // RFC 8032 permits the cofactorless equation used by verify(), which
+        // this canonical identity key and forged signature satisfy.
         assert!(verify(&pubkey, &sig, &[b"anything"]).is_ok());
         assert_eq!(
             verify_strict(&pubkey, &sig, &[b"anything"]),
@@ -347,7 +465,10 @@ mod tests {
         let mut challenge = [0u8; 64];
         challenge[0] = 1;
 
-        assert!(verify_prehashed(&pubkey, &sig, &challenge).is_ok());
+        assert_eq!(
+            verify_prehashed(&pubkey, &sig, &challenge),
+            Err(ProgramError::InvalidArgument)
+        );
         assert_eq!(
             verify_prehashed_strict(&pubkey, &sig, &challenge),
             Err(ProgramError::InvalidArgument)

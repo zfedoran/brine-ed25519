@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(unexpected_cfgs)]
 
-use brine_ed25519::{verify_strict, Address};
+use brine_ed25519::{verify, Address};
 use pinocchio::{default_allocator, nostd_panic_handler};
 
 const HELLO_WORLD_PUBKEY: Address = Address::new_from_array([
@@ -21,12 +21,7 @@ nostd_panic_handler!();
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn entrypoint() -> u64 {
-    // Keep the benchmark inputs runtime-opaque.
-    let pubkey = core::hint::black_box(HELLO_WORLD_PUBKEY);
-    let sig = core::hint::black_box(HELLO_WORLD_SIG);
-    let message = core::hint::black_box(b"hello world");
-
-    match verify_strict(&pubkey, &sig, &[message]) {
+    match verify(&HELLO_WORLD_PUBKEY, &HELLO_WORLD_SIG, &[b"hello world"]) {
         Ok(_) => 0,
         Err(e) => e.into(),
     }
@@ -38,7 +33,7 @@ mod tests {
     use solana_instruction::Instruction;
 
     #[test]
-    fn test_verify_strict() {
+    fn test_verify() {
         let mollusk = Mollusk::new(&[0x02; 32].into(), "target/deploy/brine_ed25519_test");
 
         let result = mollusk.process_and_validate_instruction(
@@ -46,6 +41,6 @@ mod tests {
             &[],
             &[Check::success()],
         );
-        println!("verify_strict consumed {} CUs", result.compute_units_consumed);
+        println!("verify consumed {} CUs", result.compute_units_consumed);
     }
 }
