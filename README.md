@@ -10,12 +10,17 @@ A fast, low-overhead, Ed25519 signature verification library for the Solana SVM.
 
 | Operation | Feature flag  | CU (Approx.) | Notes |
 |-----------|---------------|--------------|-------|
-| `verify`  | default       |       ~4,759 | challenge hash via `sol_sha512` syscall |
-| `verify`  | `fast-sha512` |      ~12,243 | in-program SHA-512, works on any cluster |
+| `verify`        | default       |       ~4,759 | challenge hash via `sol_sha512` syscall |
+| `verify`        | `fast-sha512` |      ~12,243 | in-program SHA-512, works on any cluster |
+| `verify_strict` | default       |       ~4,802 | challenge hash via `sol_sha512` syscall |
+| `verify_strict` | `fast-sha512` |      ~12,286 | in-program SHA-512, works on any cluster |
 
-These values are measured inside the Solana SVM via `test-program/` and depend on the message size.
+These values are measured inside the Solana SVM via `test-program/`, using the
+same direct-constant method as earlier releases, and depend on the message size.
 Almost the entire difference is the cost of hashing `H(R || A || M)` in-program versus
 one vectored syscall (85 CU base + ~max(10, len/2) CU per slice).
+
+Strict point validation accounts for about 50 CU.
 
 ---
 
@@ -49,6 +54,11 @@ verify_prehashed(&pubkey, &sig, &challenge)?;
 
 Custom hash implementations are supported via the `Hasher` trait and
 `verify_with_hasher::<H>`.
+
+Each function also has a strict variation: `verify_strict`,
+`verify_with_hasher_strict`, and `verify_prehashed_strict`. These add
+small-order rejection matching Solana's ed25519 precompile. See
+[Point validation](#point-validation) for the tradeoff.
 
 For clusters or SVM runtimes where the `sol_sha512` syscall is not available,
 opt into in-program hashing (enabling this anywhere in the dependency tree opts
@@ -99,7 +109,7 @@ syscall is the default.
 
 **Q:** Why not use the native Ed25519 program?
 
-**A:** Solana does provide a [Ed25519 pre-compile](https://github.com/solana-labs/solana/blob/master/sdk/src/ed25519_instruction.rs) program for signature verification—but it comes with several downsides:
+**A:** Solana does provide a [Ed25519 pre-compile](https://github.com/solana-labs/solana/blob/master/sdk/src/ed25519_instruction.rs) program for signature verification, but it comes with several downsides:
 
 - Charges an extra **5000 lamports per signature**
 - Consumes additional transaction data
@@ -113,6 +123,30 @@ This crate, **brine-ed25519**, solves all of that.
 ---
 
 ## Security
+
+### Point validation
+
+All verification functions enforce RFC 8032 point-encoding rules: the encoded
+`y` coordinate must be less than `p = 2^255 - 19`, and `x = 0` cannot carry a
+set sign bit. Point decompression and on-curve validation are performed by the
+curve implementation.
+
+`verify_strict` additionally matches Solana's ed25519 precompile by rejecting
+the eight canonical small-order public keys and `R` values. The non-strict
+functions use the cofactorless verification equation permitted by RFC 8032 and
+save about 50 CU by omitting this additional policy check.
+
+Note, `verify_strict` hardens downstream code that treats a signature as
+unique, or checks only that a valid signature exists without binding it to the
+expected signer. Neither is a safe design: a signer can vary the nonce to
+produce different valid signatures, and verification must always identify the
+intended public key.
+
+If your protocol relies on either assumption, `verify_strict` is not the fix!
+Your architecture is already unsafe. Strict verification only closes the
+small-order edge case.
+
+### Audits and review
 
 The implementation was pulled from [code-vm](https://github.com/code-payments/code-vm) (MIT-licensed), which was written and maintained by the author of this crate. 
 
