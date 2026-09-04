@@ -17,186 +17,107 @@
 /// The out-param form lets callers place the reduced bytes directly into a
 /// larger buffer (e.g. an MSM scalar array) rather than through a by-value
 /// `[u8; 32]` return, which on sBPF tends to add a redundant stack copy.
-#[cfg(not(any(target_arch = "bpf", target_os = "solana")))]
 #[inline(always)]
 pub(crate) fn scalar_from_bytes_mod_order_wide_into(input: &[u8; 64], out: &mut [u8; 32]) {
-    *out = curve25519_dalek::scalar::Scalar::from_bytes_mod_order_wide(input).to_bytes();
+    *out = reduce(input);
 }
 
-#[cfg(any(target_arch = "bpf", target_os = "solana"))]
+const BITS: u32 = 28;
+const MASK: i64 = (1 << BITS) - 1;
+/// c = L - 2^252 in 28-bit limbs, low first.
+const C: [i64; 5] = [0xcf5d3ed, 0x12631a5, 0x79cd658, 0xf9dea2f, 0x14de];
+
+/// Limb `i` of the input, 28 bits from bit 28 i, in one unaligned u32 load; limb 18 is the last
+/// byte.
 #[inline(always)]
-pub(crate) fn scalar_from_bytes_mod_order_wide_into(input: &[u8; 64], out: &mut [u8; 32]) {
-    barrett32::scalar_from_bytes_mod_order_wide_into(input, out);
+fn limb(input: &[u8; 64], i: usize) -> i64 {
+    if i == 18 {
+        return input[63] as i64;
+    }
+    let bit = BITS as usize * i;
+    // SAFETY: bit / 8 <= 59, so the four bytes are inside the input.
+    let word = unsafe { core::ptr::read_unaligned(input.as_ptr().add(bit / 8) as *const u32) };
+    ((u32::from_le(word) >> (bit % 8)) as i64) & MASK
 }
 
-#[cfg(any(target_arch = "bpf", target_os = "solana", test))]
-mod barrett32 {
-    #[cfg(test)]
-    pub(super) fn scalar_from_bytes_mod_order_wide(input: &[u8; 64]) -> [u8; 32] {
-        let mut out = [0u8; 32];
-        scalar_from_bytes_mod_order_wide_into(input, &mut out);
-        out
+/// Reduces a 64-byte digest mod L = 2^252 + c the way ref10's `sc_reduce` does, with 28-bit
+/// limbs: 252 is nine limbs exactly, so 2^252 ≡ -c folds a limb into the five below it, and a
+/// 28 × 28-bit product leaves room in an i64 to accumulate several before a carry. Signed limbs,
+/// rounding carries between the fold groups, floor carries at the end, as in ref10.
+///
+/// Folding limb i subtracts x · 2^(28 (i - 9)) · L, and a carry moves 2^28 · carry to the next
+/// limb, so the value is unchanged mod L throughout. After the second rounding chain limbs 0..7 are
+/// within ±2^32, limb 8 in [-2^27, 2^27), limb 9 within ±2^13, so the value W has
+/// |W - s9 · 2^252| + |s9| · c < 2^252: after the first `fold 9` and floor chain limb 9 is the sign of W1, in
+/// {-1, 0}, and the second `fold 9` adds L exactly when W1 < 0. The result is in [0, L), limb 8
+/// holding 2^28 when it is in [2^252, L). No intermediate exceeds 2^59, and no branch depends on
+/// the data.
+#[inline(always)]
+fn reduce(input: &[u8; 64]) -> [u8; 32] {
+    let mut s: [i64; 19] = core::array::from_fn(|i| limb(input, i));
+
+    macro_rules! fold {
+        ($i:expr) => {{
+            let x = s[$i];
+            s[$i - 9] -= x * C[0];
+            s[$i - 8] -= x * C[1];
+            s[$i - 7] -= x * C[2];
+            s[$i - 6] -= x * C[3];
+            s[$i - 5] -= x * C[4];
+            s[$i] = 0;
+        }};
+    }
+    macro_rules! carry_round {
+        ($($i:expr),*) => {$({
+            let carry = (s[$i] + (1 << (BITS - 1))) >> BITS;
+            s[$i + 1] += carry;
+            s[$i] -= carry << BITS;
+        })*};
+    }
+    macro_rules! carry_floor {
+        ($($i:expr),*) => {$({
+            let carry = s[$i] >> BITS;
+            s[$i + 1] += carry;
+            s[$i] -= carry << BITS;
+        })*};
     }
 
-    /// Ed25519 group order L as 8 × u32 limbs (little-endian).
-    const L: [u32; 8] = [
-        0x5cf5d3ed, 0x5812631a, 0xa2f79cd6, 0x14def9de, 0x00000000, 0x00000000, 0x00000000,
-        0x10000000,
+    // The top five limbs into 5..13, then 5..13 back to 28 bits; 13 carries into 14.
+    fold!(18);
+    fold!(17);
+    fold!(16);
+    fold!(15);
+    fold!(14);
+    carry_round!(5, 7, 9, 11, 13, 6, 8, 10, 12);
+
+    // 14..9 into 0..8, then 0..8 back to 28 bits: evens, odds, then the top, so limb 8 carries
+    // only after its carry-in and sends everything above 2^27 into limb 9.
+    fold!(14);
+    fold!(13);
+    fold!(12);
+    fold!(11);
+    fold!(10);
+    fold!(9);
+    carry_round!(0, 2, 4, 6, 1, 3, 5, 7, 8);
+
+    // Limb 9 away with floor carries, twice.
+    fold!(9);
+    carry_floor!(0, 1, 2, 3, 4, 5, 6, 7, 8);
+    fold!(9);
+    carry_floor!(0, 1, 2, 3, 4, 5, 6, 7);
+
+    let limb = |i: usize| s[i] as u64;
+    let words = [
+        limb(0) | limb(1) << 28 | limb(2) << 56,
+        limb(2) >> 8 | limb(3) << 20 | limb(4) << 48,
+        limb(4) >> 16 | limb(5) << 12 | limb(6) << 40,
+        limb(6) >> 24 | limb(7) << 4 | limb(8) << 32,
     ];
-
-    /// Barrett constant μ = floor(2^512 / L) as 9 × u32 limbs (little-endian).
-    const MU: [u32; 9] = [
-        0x0a2c131b, 0xed9ce5a3, 0x086329a7, 0x2106215d, 0xffffffeb, 0xffffffff, 0xffffffff,
-        0xffffffff, 0x0000000f,
-    ];
-
-    /// Multiply a 16-limb number by the 9-limb constant MU, returning
-    /// limbs [16..25] of the 25-limb product (i.e. the result >> 512).
-    #[inline(always)]
-    fn mul_x_mu(x: &[u32; 16]) -> [u32; 9] {
-        let mut result = [0u32; 25];
-
-        // Hand-unrolled outer loop. Pinning `x[I]` as a single u64 across the
-        // nine inner mac steps lets LLVM's BPF backend keep it in a register
-        // instead of reloading from the stack each iteration. After the
-        // 9-iter mac, `carry` is bounded by 2^32-1, and result[I+9] has never
-        // been written before — so a direct store replaces the old cascade.
-        macro_rules! mac_row {
-            ($i:expr) => {{
-                let xi = x[$i] as u64;
-                let mut carry = 0u64;
-                for j in 0..9 {
-                    carry += xi * (MU[j] as u64) + result[$i + j] as u64;
-                    result[$i + j] = carry as u32;
-                    carry >>= 32;
-                }
-                result[$i + 9] = carry as u32;
-            }};
-        }
-        mac_row!(0);
-        mac_row!(1);
-        mac_row!(2);
-        mac_row!(3);
-        mac_row!(4);
-        mac_row!(5);
-        mac_row!(6);
-        mac_row!(7);
-        mac_row!(8);
-        mac_row!(9);
-        mac_row!(10);
-        mac_row!(11);
-        mac_row!(12);
-        mac_row!(13);
-        mac_row!(14);
-        mac_row!(15);
-
-        [
-            result[16], result[17], result[18], result[19], result[20], result[21], result[22],
-            result[23], result[24],
-        ]
+    let mut out = [0u8; 32];
+    for (i, word) in words.iter().enumerate() {
+        out[8 * i..8 * i + 8].copy_from_slice(&word.to_le_bytes());
     }
-
-    /// Multiply a 9-limb quotient estimate by the 8-limb constant L,
-    /// returning the low 9 limbs (mod 2^288).
-    #[inline(always)]
-    fn mul_q_l(q: &[u32; 9]) -> [u32; 9] {
-        let mut result = [0u32; 9];
-
-        for i in 0..9 {
-            let mut carry = 0u64;
-            for j in 0..8 {
-                if i + j >= 9 {
-                    break;
-                }
-                carry += (q[i] as u64) * (L[j] as u64) + result[i + j] as u64;
-                result[i + j] = carry as u32;
-                carry >>= 32;
-            }
-            let mut k = i + 8.min(9 - i);
-            while carry > 0 && k < 9 {
-                carry += result[k] as u64;
-                result[k] = carry as u32;
-                carry >>= 32;
-                k += 1;
-            }
-        }
-
-        result
-    }
-
-    /// Subtract b from a (9-limb), returning result and whether it underflowed.
-    #[inline(always)]
-    fn sub9(a: &[u32; 9], b: &[u32; 9]) -> ([u32; 9], bool) {
-        let mut result = [0u32; 9];
-        let mut borrow = 0u64;
-
-        for i in 0..9 {
-            let diff = (a[i] as u64).wrapping_sub(b[i] as u64).wrapping_sub(borrow);
-            result[i] = diff as u32;
-            borrow = (diff >> 63) & 1;
-        }
-
-        (result, borrow != 0)
-    }
-
-    /// Returns true if a >= L (a is 9 limbs, L is 8 limbs).
-    #[inline(always)]
-    fn gte_l(a: &[u32; 9]) -> bool {
-        if a[8] != 0 {
-            return true;
-        }
-        for i in (0..8).rev() {
-            if a[i] > L[i] {
-                return true;
-            }
-            if a[i] < L[i] {
-                return false;
-            }
-        }
-        true
-    }
-
-    #[inline(always)]
-    pub(super) fn scalar_from_bytes_mod_order_wide_into(input: &[u8; 64], out: &mut [u8; 32]) {
-        // Parse input as 16 × u32 limbs via one unaligned load per limb. sBPF
-        // accepts unaligned u32 access, and this lets LLVM drop the per-byte
-        // shuffle the `from_le_bytes` construction used to emit.
-        let mut x = [0u32; 16];
-        let src = input.as_ptr() as *const u32;
-        for i in 0..16 {
-            // SAFETY: `src` points to a [u8; 64] covering 16 aligned-or-unaligned
-            // u32 slots; `i` is in range.
-            x[i] = u32::from_le(unsafe { core::ptr::read_unaligned(src.add(i)) });
-        }
-
-        // q_hat = (x * μ) >> 512
-        let q_hat = mul_x_mu(&x);
-
-        // r = x - q_hat * L (mod 2^288, using 9 limbs)
-        let q_l = mul_q_l(&q_hat);
-        let x9 = [x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7], x[8]];
-        let (mut r, _) = sub9(&x9, &q_l);
-
-        // At most 2 corrections needed.
-        if gte_l(&r) {
-            let l9 = [L[0], L[1], L[2], L[3], L[4], L[5], L[6], L[7], 0];
-            let (r2, _) = sub9(&r, &l9);
-            r = r2;
-        }
-        if gte_l(&r) {
-            let l9 = [L[0], L[1], L[2], L[3], L[4], L[5], L[6], L[7], 0];
-            let (r2, _) = sub9(&r, &l9);
-            r = r2;
-        }
-
-        // Serialize the low 8 limbs as 32 bytes LE via a single 32-byte copy.
-        // On sBPF the 8 × u32 limbs are already stored in little-endian order,
-        // so the raw byte image of `r[..8]` equals the canonical output bytes.
-        // SAFETY: `r` has at least 8 × 4 = 32 bytes from its start; `out` is 32 bytes.
-        unsafe {
-            core::ptr::copy_nonoverlapping(r.as_ptr() as *const u8, out.as_mut_ptr(), 32);
-        }
-    }
+    out
 }
 
 #[cfg(test)]
@@ -227,7 +148,7 @@ mod raw {
 
 #[cfg(test)]
 mod tests {
-    use super::{barrett32, raw};
+    use super::{raw, reduce};
     use rand::rngs::{OsRng, StdRng};
     use rand::{RngCore, SeedableRng};
 
@@ -389,10 +310,7 @@ mod tests {
 
         for input in cases {
             let expected = dalek_wide(&input);
-            assert_eq!(
-                barrett32::scalar_from_bytes_mod_order_wide(&input),
-                expected
-            );
+            assert_eq!(reduce(&input), expected);
         }
     }
 
@@ -400,7 +318,7 @@ mod tests {
     fn reduce_wide_many() {
         for seed in 0..512u64 {
             let input = generated_bytes::<64>(0xd1b5_4a32_d192_ed03 ^ seed);
-            let reduced = barrett32::scalar_from_bytes_mod_order_wide(&input);
+            let reduced = reduce(&input);
             let expected = dalek_wide(&input);
 
             assert_eq!(reduced, expected, "seed {seed} input {input:?}");
@@ -418,7 +336,7 @@ mod tests {
             let mut input = [0u8; 64];
             input[bit / 8] = 1u8 << (bit % 8);
 
-            let reduced = barrett32::scalar_from_bytes_mod_order_wide(&input);
+            let reduced = reduce(&input);
             let expected = dalek_wide(&input);
 
             assert_eq!(reduced, expected, "bit {bit} input {input:?}");
@@ -452,17 +370,92 @@ mod tests {
 
             let expected = dalek_wide(&wide);
 
-            let reduced = barrett32::scalar_from_bytes_mod_order_wide(&wide);
+            let reduced = reduce(&wide);
             assert_eq!(
                 reduced, expected,
-                "seed {seed:?} case {case} barrett32 {wide:?}"
+                "seed {seed:?} case {case} ref10_28 {wide:?}"
             );
-
             assert_eq!(
                 raw::scalar_from_canonical_bytes(reduced),
                 Some(reduced),
                 "seed {seed:?} case {case} reduced {reduced:?}"
             );
+        }
+    }
+
+    /// Every check on one input: dalek's answer, and canonical.
+    fn check_reduce(input: &[u8; 64]) {
+        let expected = dalek_wide(input);
+        assert_eq!(reduce(input), expected, "{input:?}");
+        assert_eq!(raw::scalar_from_canonical_bytes(expected), Some(expected));
+    }
+
+    /// `bytes + value`, little-endian, at any width.
+    fn add_le<const N: usize>(mut bytes: [u8; N], value: &[u8]) -> [u8; N] {
+        let mut carry = 0u16;
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            let sum = *byte as u16 + *value.get(i).unwrap_or(&0) as u16 + carry;
+            *byte = sum as u8;
+            carry = sum >> 8;
+        }
+        bytes
+    }
+
+    fn wide(bytes: &[u8]) -> [u8; 64] {
+        let mut input = [0u8; 64];
+        input[..bytes.len()].copy_from_slice(bytes);
+        input
+    }
+
+    /// Every carry-heavy neighbourhood: 2^k ± 2 for every k, and L ± 255.
+    #[test]
+    fn reduce_wide_around_powers_and_l() {
+        let mut minus_two = [0xff; 64];
+        minus_two[0] = 0xfe;
+        for k in 0..512usize {
+            let mut power = [0u8; 64];
+            power[k / 8] = 1 << (k % 8);
+            check_reduce(&power);
+            check_reduce(&add_le(power, &[1]));
+            check_reduce(&add_le(power, &[2]));
+            check_reduce(&add_le(power, &[0xff; 64]));
+            check_reduce(&add_le(power, &minus_two));
+        }
+        for delta in 0..=255u8 {
+            check_reduce(&wide(&sub_small_le(L_BYTES, delta)));
+            check_reduce(&wide(&add_small_le(L_BYTES, delta)));
+        }
+    }
+
+    /// Results in [2^252, L), where limb 8 holds 2^28, from the residue itself and from the
+    /// residue plus a few multiples of L.
+    #[test]
+    fn reduce_wide_top_of_the_range() {
+        let mut two_252 = [0u8; 32];
+        two_252[31] = 0x10;
+        let residues = [
+            two_252,
+            add_small_le(two_252, 1),
+            add_small_le(two_252, 255),
+            sub_small_le(L_BYTES, 1),
+            sub_small_le(L_BYTES, 2),
+        ];
+        for residue in residues {
+            let mut input = wide(&residue);
+            for _ in 0..4 {
+                check_reduce(&input);
+                assert_eq!(reduce(&input), residue);
+                input = add_le(input, &L_BYTES);
+            }
+        }
+    }
+
+    #[test]
+    fn reduce_wide_1m_against_dalek() {
+        for seed in 1..=1_000_000u64 {
+            check_reduce(&generated_bytes::<64>(
+                seed.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+            ));
         }
     }
 }
